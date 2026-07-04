@@ -8,7 +8,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [counts, setCounts] = useState({ credentials: 0, notes: 0, deadlines: 0 })
   const [upcoming, setUpcoming] = useState([])
-  const [recentLogs, setRecentLogs] = useState([])
+  const [devices, setDevices] = useState([])
 
   useEffect(() => {
     load()
@@ -18,7 +18,7 @@ export default function Dashboard() {
     setLoading(true)
     const today = new Date().toISOString().slice(0, 10)
 
-    const [cred, notes, deadlinesOpen, up, logs] = await Promise.all([
+    const [cred, notes, deadlinesOpen, up, sched] = await Promise.all([
       supabase.from('credentials').select('id', { count: 'exact', head: true }),
       supabase.from('secure_notes').select('id', { count: 'exact', head: true }),
       supabase
@@ -33,10 +33,9 @@ export default function Dashboard() {
         .order('due_date', { ascending: true })
         .limit(5),
       supabase
-        .from('automation_log')
-        .select('*')
-        .order('occurred_at', { ascending: false })
-        .limit(5),
+        .from('automation_schedule')
+        .select('device_name, room, schedule')
+        .order('device_name', { ascending: true }),
     ])
 
     setCounts({
@@ -45,11 +44,21 @@ export default function Dashboard() {
       deadlines: deadlinesOpen.count || 0,
     })
     setUpcoming(up.data || [])
-    setRecentLogs(logs.data || [])
+    setDevices(sched.data || [])
     setLoading(false)
   }
 
   if (loading) return <Spinner label="Caricamento…" />
+
+  // Stato "adesso" dei dispositivi in base alla pianificazione settimanale
+  const now = new Date()
+  const dayIdx = (now.getDay() + 6) % 7 // JS: Dom=0 -> nostro Lun=0..Dom=6
+  const hour = now.getHours()
+  const deviceStatus = devices.map((d) => {
+    const grid = Array.isArray(d.schedule) ? d.schedule : []
+    const col = Array.isArray(grid[dayIdx]) ? grid[dayIdx] : []
+    return { name: d.device_name, room: d.room, active: Boolean(col[hour]) }
+  })
 
   return (
     <div>
@@ -82,18 +91,19 @@ export default function Dashboard() {
         </section>
 
         <section className="panel">
-          <h2 className="panel-title">💡 Ultima attività domotica</h2>
-          {recentLogs.length === 0 ? (
-            <p className="muted">Nessuna registrazione.</p>
+          <h2 className="panel-title">💡 Domotica adesso</h2>
+          {deviceStatus.length === 0 ? (
+            <p className="muted">Nessun dispositivo pianificato.</p>
           ) : (
             <ul className="mini-list">
-              {recentLogs.map((l) => (
-                <li key={l.id}>
+              {deviceStatus.map((d) => (
+                <li key={d.name + (d.room || '')}>
                   <span>
-                    <span className={l.action === 'on' ? 'dot dot-on' : 'dot dot-off'} />
-                    {l.device_name}
+                    <span className={d.active ? 'dot dot-on' : 'dot dot-off'} />
+                    {d.name}
+                    {d.room && <span className="log-room"> · {d.room}</span>}
                   </span>
-                  <span className="mini-date">{formatDateTime(l.occurred_at)}</span>
+                  <span className="mini-date">{d.active ? 'Attivo' : 'Spento'}</span>
                 </li>
               ))}
             </ul>
@@ -121,14 +131,5 @@ function formatDate(dateStr) {
   return new Date(dateStr + 'T00:00:00').toLocaleDateString('it-IT', {
     day: '2-digit',
     month: 'short',
-  })
-}
-
-function formatDateTime(iso) {
-  return new Date(iso).toLocaleString('it-IT', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
   })
 }

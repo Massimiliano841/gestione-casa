@@ -4,22 +4,34 @@ import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
 
-function emptyForm() {
-  return {
-    device_name: '',
-    room: '',
-    action: 'on',
-    occurred_at: toLocalInput(new Date()),
-    notes: '',
+const DAYS = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+
+// Griglia vuota: 7 giorni (0=Lun..6=Dom) x 24 ore, tutte spente
+function emptyGrid() {
+  return DAYS.map(() => HOURS.map(() => false))
+}
+
+// Normalizza uno schedule arrivato dal DB in una matrice 7x24 di booleani
+function normalizeSchedule(raw) {
+  const grid = emptyGrid()
+  if (!Array.isArray(raw)) return grid
+  for (let d = 0; d < 7; d++) {
+    const col = raw[d]
+    if (!Array.isArray(col)) continue
+    for (let h = 0; h < 24; h++) grid[d][h] = Boolean(col[h])
   }
+  return grid
 }
 
 export default function Automation() {
-  const [items, setItems] = useState([])
+  const [devices, setDevices] = useState([])
   const [loading, setLoading] = useState(true)
+  const [dirty, setDirty] = useState({})
+  const [saving, setSaving] = useState({})
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [form, setForm] = useState(emptyForm)
+  const [form, setForm] = useState({ device_name: '', room: '' })
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -29,168 +41,172 @@ export default function Automation() {
   async function load() {
     setLoading(true)
     const { data, error } = await supabase
-      .from('automation_log')
+      .from('automation_schedule')
       .select('*')
-      .order('occurred_at', { ascending: false })
-      .limit(200)
+      .order('device_name', { ascending: true })
     if (error) console.error(error)
-    setItems(data || [])
+    setDevices(
+      (data || []).map((d) => ({
+        id: d.id,
+        device_name: d.device_name,
+        room: d.room,
+        schedule: normalizeSchedule(d.schedule),
+      }))
+    )
+    setDirty({})
     setLoading(false)
+  }
+
+  // Aggiorna lo schedule di un dispositivo in locale e lo marca "da salvare"
+  function updateSchedule(id, updater) {
+    setDevices((devs) =>
+      devs.map((d) => (d.id === id ? { ...d, schedule: updater(d.schedule) } : d))
+    )
+    setDirty((s) => ({ ...s, [id]: true }))
+  }
+
+  function toggleCell(id, day, hour) {
+    updateSchedule(id, (sched) =>
+      sched.map((col, di) =>
+        di === day ? col.map((v, hi) => (hi === hour ? !v : v)) : col
+      )
+    )
+  }
+
+  // Tap sull'etichetta dell'ora: accende/spegne quell'ora su tutti i giorni
+  function toggleHour(id, hour) {
+    updateSchedule(id, (sched) => {
+      const anyOff = sched.some((col) => !col[hour])
+      return sched.map((col) => col.map((v, hi) => (hi === hour ? anyOff : v)))
+    })
+  }
+
+  // Copia la colonna "from" sui giorni "targets"
+  function copyDay(id, from, targets) {
+    updateSchedule(id, (sched) => {
+      const source = sched[from]
+      return sched.map((col, di) =>
+        targets.includes(di) && di !== from ? [...source] : col
+      )
+    })
+  }
+
+  function clearDevice(id) {
+    updateSchedule(id, () => emptyGrid())
+  }
+
+  async function saveDevice(device) {
+    setSaving((s) => ({ ...s, [device.id]: true }))
+    const { error } = await supabase
+      .from('automation_schedule')
+      .update({ schedule: device.schedule, updated_at: new Date().toISOString() })
+      .eq('id', device.id)
+    setSaving((s) => ({ ...s, [device.id]: false }))
+    if (error) return alert('Errore nel salvataggio: ' + error.message)
+    setDirty((s) => {
+      const next = { ...s }
+      delete next[device.id]
+      return next
+    })
   }
 
   function openNew() {
     setEditing(null)
-    setForm(emptyForm())
+    setForm({ device_name: '', room: '' })
     setModalOpen(true)
   }
 
-  function openEdit(item) {
-    setEditing(item)
-    setForm({
-      device_name: item.device_name || '',
-      room: item.room || '',
-      action: item.action || 'on',
-      occurred_at: toLocalInput(new Date(item.occurred_at)),
-      notes: item.notes || '',
-    })
+  function openEdit(device) {
+    setEditing(device)
+    setForm({ device_name: device.device_name || '', room: device.room || '' })
     setModalOpen(true)
   }
 
-  async function handleSave(e) {
+  async function handleSaveDevice(e) {
     e.preventDefault()
     setBusy(true)
     try {
       const row = {
         device_name: form.device_name.trim(),
         room: form.room.trim() || null,
-        action: form.action,
-        occurred_at: new Date(form.occurred_at).toISOString(),
-        notes: form.notes.trim() || null,
       }
       if (editing) {
         const { error } = await supabase
-          .from('automation_log')
+          .from('automation_schedule')
           .update(row)
           .eq('id', editing.id)
         if (error) throw error
       } else {
-        const { error } = await supabase.from('automation_log').insert(row)
+        const { error } = await supabase
+          .from('automation_schedule')
+          .insert({ ...row, schedule: emptyGrid() })
         if (error) throw error
       }
       setModalOpen(false)
       await load()
     } catch (err) {
-      alert('Errore nel salvataggio: ' + err.message)
+      alert('Errore: ' + err.message)
     } finally {
       setBusy(false)
     }
   }
 
-  // Registrazione rapida on/off di un dispositivo gia noto
-  async function quickLog(device_name, room, action) {
-    const { error } = await supabase.from('automation_log').insert({
-      device_name,
-      room: room || null,
-      action,
-    })
+  async function deleteDevice(device) {
+    if (!confirm(`Eliminare "${device.device_name}" e la sua pianificazione?`)) return
+    const { error } = await supabase
+      .from('automation_schedule')
+      .delete()
+      .eq('id', device.id)
     if (error) return alert('Errore: ' + error.message)
     await load()
   }
-
-  async function handleDelete(item) {
-    if (!confirm('Eliminare questa registrazione?')) return
-    const { error } = await supabase.from('automation_log').delete().eq('id', item.id)
-    if (error) return alert('Errore: ' + error.message)
-    await load()
-  }
-
-  // Dispositivi distinti per le scorciatoie rapide
-  const devices = [...new Map(items.map((i) => [i.device_name + '|' + (i.room || ''), i])).values()].slice(
-    0,
-    8
-  )
 
   return (
     <div>
       <PageHeader
         icon="💡"
         title="Domotica"
-        subtitle="Registro accensioni e spegnimenti"
+        subtitle="Pianificazione settimanale dei dispositivi"
         action={
           <button className="btn btn-primary" onClick={openNew}>
-            + Registra
+            + Dispositivo
           </button>
         }
       />
 
-      {devices.length > 0 && (
-        <div className="quick-devices">
-          <span className="quick-label">Rapido:</span>
-          {devices.map((d) => (
-            <span className="quick-device" key={d.id}>
-              <span className="quick-name">
-                {d.device_name}
-                {d.room ? ` · ${d.room}` : ''}
-              </span>
-              <button
-                className="chip chip-on"
-                onClick={() => quickLog(d.device_name, d.room, 'on')}
-              >
-                ON
-              </button>
-              <button
-                className="chip chip-off"
-                onClick={() => quickLog(d.device_name, d.room, 'off')}
-              >
-                OFF
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
       {loading ? (
         <Spinner label="Caricamento…" />
-      ) : items.length === 0 ? (
+      ) : devices.length === 0 ? (
         <div className="empty">
           <div className="empty-icon">💡</div>
-          <p>Nessuna registrazione.</p>
+          <p>Nessun dispositivo pianificato.</p>
           <button className="btn btn-primary" onClick={openNew}>
-            + Registra la prima
+            + Aggiungi il primo
           </button>
         </div>
       ) : (
-        <div className="log-list">
-          {items.map((item) => (
-            <div className="log-row" key={item.id}>
-              <span className={item.action === 'on' ? 'dot dot-on' : 'dot dot-off'} />
-              <div className="log-main">
-                <div className="log-title">
-                  {item.device_name}
-                  {item.room && <span className="log-room"> · {item.room}</span>}
-                </div>
-                <div className="log-time">{formatDateTime(item.occurred_at)}</div>
-                {item.notes && <div className="log-notes">{item.notes}</div>}
-              </div>
-              <span className={`action-badge action-${item.action}`}>
-                {item.action.toUpperCase()}
-              </span>
-              <div className="card-actions">
-                <button className="icon-btn" onClick={() => openEdit(item)} title="Modifica">
-                  ✏️
-                </button>
-                <button className="icon-btn" onClick={() => handleDelete(item)} title="Elimina">
-                  🗑
-                </button>
-              </div>
-            </div>
+        <div className="sched-list">
+          {devices.map((device) => (
+            <DeviceCard
+              key={device.id}
+              device={device}
+              dirty={!!dirty[device.id]}
+              saving={!!saving[device.id]}
+              onToggleCell={toggleCell}
+              onToggleHour={toggleHour}
+              onCopyDay={copyDay}
+              onClear={clearDevice}
+              onSave={saveDevice}
+              onEdit={openEdit}
+              onDelete={deleteDevice}
+            />
           ))}
         </div>
       )}
 
       {modalOpen && (
         <Modal
-          title={editing ? 'Modifica registrazione' : 'Nuova registrazione'}
+          title={editing ? 'Modifica dispositivo' : 'Nuovo dispositivo'}
           onClose={() => setModalOpen(false)}
           footer={
             <>
@@ -199,7 +215,7 @@ export default function Automation() {
               </button>
               <button
                 className="btn btn-primary"
-                onClick={handleSave}
+                onClick={handleSaveDevice}
                 disabled={busy || !form.device_name.trim()}
               >
                 {busy ? 'Salvataggio…' : 'Salva'}
@@ -207,7 +223,7 @@ export default function Automation() {
             </>
           }
         >
-          <form className="form-grid" onSubmit={handleSave}>
+          <form className="form-grid" onSubmit={handleSaveDevice}>
             <label className="field">
               <span>Dispositivo *</span>
               <input
@@ -226,33 +242,6 @@ export default function Automation() {
                 placeholder="es. Salotto, Esterno…"
               />
             </label>
-            <label className="field">
-              <span>Azione</span>
-              <select
-                value={form.action}
-                onChange={(e) => setForm({ ...form, action: e.target.value })}
-              >
-                <option value="on">Accensione (ON)</option>
-                <option value="off">Spegnimento (OFF)</option>
-                <option value="altro">Altro</option>
-              </select>
-            </label>
-            <label className="field">
-              <span>Data e ora</span>
-              <input
-                type="datetime-local"
-                value={form.occurred_at}
-                onChange={(e) => setForm({ ...form, occurred_at: e.target.value })}
-              />
-            </label>
-            <label className="field">
-              <span>Note</span>
-              <textarea
-                rows={2}
-                value={form.notes}
-                onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              />
-            </label>
           </form>
         </Modal>
       )}
@@ -260,19 +249,125 @@ export default function Automation() {
   )
 }
 
-// Converte una Date in stringa per <input type="datetime-local"> in ora locale
-function toLocalInput(date) {
-  const off = date.getTimezoneOffset()
-  const local = new Date(date.getTime() - off * 60000)
-  return local.toISOString().slice(0, 16)
-}
+function DeviceCard({
+  device,
+  dirty,
+  saving,
+  onToggleCell,
+  onToggleHour,
+  onCopyDay,
+  onClear,
+  onSave,
+  onEdit,
+  onDelete,
+}) {
+  const [copyFrom, setCopyFrom] = useState(0)
+  const [copyTo, setCopyTo] = useState('all')
 
-function formatDateTime(iso) {
-  return new Date(iso).toLocaleString('it-IT', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  function applyCopy() {
+    let targets
+    if (copyTo === 'all') targets = [0, 1, 2, 3, 4, 5, 6]
+    else if (copyTo === 'weekdays') targets = [0, 1, 2, 3, 4]
+    else if (copyTo === 'weekend') targets = [5, 6]
+    else targets = [Number(copyTo.slice(1))] // "d3" -> giorno 3
+    onCopyDay(device.id, copyFrom, targets)
+  }
+
+  return (
+    <div className="sched-card">
+      <div className="sched-card-head">
+        <div className="sched-card-title">
+          <span className="sched-device">{device.device_name}</span>
+          {device.room && <span className="sched-room">· {device.room}</span>}
+        </div>
+        <div className="card-actions">
+          {dirty && (
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => onSave(device)}
+              disabled={saving}
+            >
+              {saving ? 'Salvataggio…' : '💾 Salva'}
+            </button>
+          )}
+          <button className="icon-btn" onClick={() => onEdit(device)} title="Rinomina">
+            ✏️
+          </button>
+          <button className="icon-btn" onClick={() => onDelete(device)} title="Elimina">
+            🗑
+          </button>
+        </div>
+      </div>
+
+      <div className="sched-scroll">
+        <div className="sched-grid">
+          <div className="sched-row sched-head-row">
+            <div className="sched-hour-label sched-corner">Ora</div>
+            {DAYS.map((d, di) => {
+              const count = device.schedule[di].filter(Boolean).length
+              return (
+                <div className="sched-day" key={d}>
+                  <span>{d}</span>
+                  <span className="sched-day-count">{count}h</span>
+                </div>
+              )
+            })}
+          </div>
+
+          {HOURS.map((h) => (
+            <div className="sched-row" key={h}>
+              <button
+                className="sched-hour-label"
+                onClick={() => onToggleHour(device.id, h)}
+                title="Accendi/spegni quest'ora su tutti i giorni"
+              >
+                {String(h).padStart(2, '0')}
+              </button>
+              {DAYS.map((d, di) => (
+                <button
+                  key={d}
+                  className={
+                    device.schedule[di][h] ? 'sched-cell on' : 'sched-cell'
+                  }
+                  onClick={() => onToggleCell(device.id, di, h)}
+                  aria-label={`${d} ore ${h}: ${device.schedule[di][h] ? 'attivo' : 'spento'}`}
+                  aria-pressed={device.schedule[di][h]}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="sched-copy">
+        <span className="sched-copy-label">Copia</span>
+        <select value={copyFrom} onChange={(e) => setCopyFrom(Number(e.target.value))}>
+          {DAYS.map((d, i) => (
+            <option key={d} value={i}>
+              {d}
+            </option>
+          ))}
+        </select>
+        <span className="sched-copy-label">su</span>
+        <select value={copyTo} onChange={(e) => setCopyTo(e.target.value)}>
+          <option value="all">Tutti i giorni</option>
+          <option value="weekdays">Feriali (Lun–Ven)</option>
+          <option value="weekend">Weekend (Sab–Dom)</option>
+          <optgroup label="Un solo giorno">
+            {DAYS.map((d, i) => (
+              <option key={d} value={'d' + i}>
+                {d}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+        <button className="btn btn-sm" onClick={applyCopy}>
+          Applica
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={() => onClear(device.id)}>
+          Svuota
+        </button>
+      </div>
+    </div>
+  )
 }
