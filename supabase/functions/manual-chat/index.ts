@@ -23,9 +23,9 @@ function json(body: unknown, status = 200) {
 const SYSTEM = `Sei l'assistente di "Gestione Casa" e rispondi a domande su un manuale d'uso di un dispositivo.
 Regole:
 - Usa ESCLUSIVAMENTE le informazioni presenti nel CONTESTO fornito (estratti del manuale).
-- Se la risposta non è nel contesto, dillo con onestà (es. "Non ho trovato questa informazione nel manuale.") e non inventare.
+- Se la risposta non è nel contesto, dillo con onestà (es. "Non ho trovato questa informazione nel manuale.") e non inventare. In questo caso NON citare alcun estratto e non elencare di cosa parlano gli altri estratti.
 - Rispondi in italiano, in modo chiaro e conciso; usa elenchi puntati per i passaggi.
-- Cita tra parentesi quadre il numero dell'estratto usato, es. [2].
+- Cita tra parentesi quadre [n] SOLO gli estratti che contengono davvero l'informazione che stai fornendo, es. [2]. Non citare estratti che stai scartando o menzionando come non pertinenti.
 - Rispondi solo con la risposta finale, senza descrivere il tuo ragionamento.`
 
 Deno.serve(async (req) => {
@@ -108,22 +108,35 @@ Deno.serve(async (req) => {
       .join('\n')
       .trim()
 
+    // Estratti effettivamente citati nella risposta ([1], [2], ...): mostriamo
+    // come fonti e pagine SOLO questi, così le miniature sono coerenti con la
+    // risposta. Se il modello non cita nulla (es. "non ho trovato"), niente immagini.
+    const cited = [
+      ...new Set(
+        [...answer.matchAll(/\[(\d+)\]/g)]
+          .map((m: RegExpMatchArray) => Number(m[1]))
+          .filter((n: number) => Number.isInteger(n) && n >= 1 && n <= chunks.length)
+      ),
+    ].sort((a, b) => a - b)
+
+    const sources = cited.map((n: number) => ({
+      n,
+      chunk_index: chunks[n - 1].chunk_index,
+      page: chunks[n - 1].page,
+    }))
+
     // pagine citate, distinte e ordinate
     const pages = [
       ...new Set(
-        chunks
-          .map((c: { page: number | null }) => c.page)
+        cited
+          .map((n: number) => chunks[n - 1].page)
           .filter((p: number | null) => typeof p === 'number')
       ),
     ].sort((a, b) => a - b)
 
     return json({
       answer: answer || 'Nessuna risposta generata.',
-      sources: chunks.map((c: { chunk_index: number; page: number | null }, i: number) => ({
-        n: i + 1,
-        chunk_index: c.chunk_index,
-        page: c.page,
-      })),
+      sources,
       pages,
     })
   } catch (e) {
