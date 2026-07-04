@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { useVault } from '../context/VaultProvider'
-import { encryptText, decryptText } from '../lib/crypto'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
@@ -9,7 +7,6 @@ import Spinner from '../components/Spinner'
 const EMPTY = { title: '', content: '', category: '' }
 
 export default function SecureNotes() {
-  const { vaultKey } = useVault()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -18,7 +15,6 @@ export default function SecureNotes() {
   const [form, setForm] = useState(EMPTY)
   const [busy, setBusy] = useState(false)
   const [openId, setOpenId] = useState(null)
-  const [decrypted, setDecrypted] = useState({}) // id -> contenuto in chiaro
 
   useEffect(() => {
     load()
@@ -41,15 +37,9 @@ export default function SecureNotes() {
     setModalOpen(true)
   }
 
-  async function openEdit(item) {
-    let content = ''
-    try {
-      content = await decryptText(vaultKey, item.content_enc)
-    } catch {
-      alert('Impossibile decifrare questa nota.')
-    }
+  function openEdit(item) {
     setEditing(item)
-    setForm({ title: item.title || '', content, category: item.category || '' })
+    setForm({ title: item.title || '', content: item.content || '', category: item.category || '' })
     setModalOpen(true)
   }
 
@@ -57,11 +47,10 @@ export default function SecureNotes() {
     e.preventDefault()
     setBusy(true)
     try {
-      const content_enc = await encryptText(vaultKey, form.content)
       const row = {
         title: form.title.trim(),
         category: form.category.trim() || null,
-        content_enc,
+        content: form.content || null,
       }
       if (editing) {
         const { error } = await supabase
@@ -89,21 +78,8 @@ export default function SecureNotes() {
     await load()
   }
 
-  async function toggleOpen(item) {
-    if (openId === item.id) {
-      setOpenId(null)
-      return
-    }
-    if (!decrypted[item.id]) {
-      try {
-        const text = await decryptText(vaultKey, item.content_enc)
-        setDecrypted((d) => ({ ...d, [item.id]: text }))
-      } catch {
-        alert('Impossibile decifrare questa nota.')
-        return
-      }
-    }
-    setOpenId(item.id)
+  function toggleOpen(id) {
+    setOpenId((cur) => (cur === id ? null : id))
   }
 
   const filtered = items.filter((i) => {
@@ -116,7 +92,7 @@ export default function SecureNotes() {
       <PageHeader
         icon="📄"
         title="Informazioni"
-        subtitle="Note e dati importanti, cifrati"
+        subtitle="Note e dati importanti"
         action={
           <button className="btn btn-primary" onClick={openNew}>
             + Aggiungi
@@ -148,12 +124,12 @@ export default function SecureNotes() {
               <div className="card-main">
                 <div className="card-title">{item.title}</div>
                 {item.category && <span className="tag">{item.category}</span>}
-                {openId === item.id && (
-                  <pre className="note-content">{decrypted[item.id]}</pre>
+                {openId === item.id && <pre className="note-content">{item.content}</pre>}
+                {item.content && (
+                  <button className="chip" onClick={() => toggleOpen(item.id)}>
+                    {openId === item.id ? '🙈 Nascondi' : '👁 Mostra contenuto'}
+                  </button>
                 )}
-                <button className="chip" onClick={() => toggleOpen(item)}>
-                  {openId === item.id ? '🙈 Nascondi' : '👁 Mostra contenuto'}
-                </button>
               </div>
               <div className="card-actions">
                 <button className="icon-btn" onClick={() => openEdit(item)} title="Modifica">
@@ -210,7 +186,7 @@ export default function SecureNotes() {
               />
             </label>
             <label className="field">
-              <span>Contenuto (cifrato)</span>
+              <span>Contenuto</span>
               <textarea
                 rows={8}
                 value={form.content}

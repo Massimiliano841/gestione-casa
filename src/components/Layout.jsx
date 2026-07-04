@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
-import { useVault } from '../context/VaultProvider'
 
 const NAV = [
   { to: '/', label: 'Riepilogo', icon: '🏠', end: true },
@@ -13,7 +12,6 @@ const NAV = [
 
 export default function Layout() {
   const { user, signOut } = useAuth()
-  const { lockVault } = useVault()
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
@@ -43,9 +41,6 @@ export default function Layout() {
           <p className="user-email" title={user?.email}>
             {user?.email}
           </p>
-          <button className="btn btn-ghost btn-sm" onClick={lockVault}>
-            🔒 Blocca cassaforte
-          </button>
           <button className="btn btn-ghost btn-sm" onClick={signOut}>
             🚪 Esci
           </button>

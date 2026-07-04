@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
-import { useVault } from '../context/VaultProvider'
-import { encryptText, decryptText } from '../lib/crypto'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
@@ -9,7 +7,6 @@ import Spinner from '../components/Spinner'
 const EMPTY = { title: '', username: '', url: '', password: '', notes: '', category: '' }
 
 export default function Credentials() {
-  const { vaultKey } = useVault()
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
@@ -17,7 +14,7 @@ export default function Credentials() {
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(EMPTY)
   const [busy, setBusy] = useState(false)
-  const [revealed, setRevealed] = useState({}) // id -> password in chiaro
+  const [revealed, setRevealed] = useState({}) // id -> true se password visibile
 
   useEffect(() => {
     load()
@@ -25,10 +22,7 @@ export default function Credentials() {
 
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('credentials')
-      .select('*')
-      .order('title')
+    const { data, error } = await supabase.from('credentials').select('*').order('title')
     if (error) console.error(error)
     setItems(data || [])
     setLoading(false)
@@ -40,22 +34,14 @@ export default function Credentials() {
     setModalOpen(true)
   }
 
-  async function openEdit(item) {
-    let password = ''
-    let notes = ''
-    try {
-      password = await decryptText(vaultKey, item.password_enc)
-      notes = await decryptText(vaultKey, item.notes_enc)
-    } catch {
-      alert('Impossibile decifrare questa voce con la master password corrente.')
-    }
+  function openEdit(item) {
     setEditing(item)
     setForm({
       title: item.title || '',
       username: item.username || '',
       url: item.url || '',
-      password,
-      notes,
+      password: item.password || '',
+      notes: item.notes || '',
       category: item.category || '',
     })
     setModalOpen(true)
@@ -65,15 +51,13 @@ export default function Credentials() {
     e.preventDefault()
     setBusy(true)
     try {
-      const password_enc = await encryptText(vaultKey, form.password)
-      const notes_enc = await encryptText(vaultKey, form.notes)
       const row = {
         title: form.title.trim(),
         username: form.username.trim() || null,
         url: form.url.trim() || null,
         category: form.category.trim() || null,
-        password_enc,
-        notes_enc,
+        password: form.password || null,
+        notes: form.notes || null,
       }
       if (editing) {
         const { error } = await supabase
@@ -101,27 +85,13 @@ export default function Credentials() {
     await load()
   }
 
-  async function toggleReveal(item) {
-    if (revealed[item.id]) {
-      setRevealed((r) => {
-        const copy = { ...r }
-        delete copy[item.id]
-        return copy
-      })
-      return
-    }
-    try {
-      const pw = await decryptText(vaultKey, item.password_enc)
-      setRevealed((r) => ({ ...r, [item.id]: pw }))
-    } catch {
-      alert('Impossibile decifrare la password.')
-    }
+  function toggleReveal(id) {
+    setRevealed((r) => ({ ...r, [id]: !r[id] }))
   }
 
   async function copyPassword(item) {
     try {
-      const pw = await decryptText(vaultKey, item.password_enc)
-      await navigator.clipboard.writeText(pw)
+      await navigator.clipboard.writeText(item.password || '')
     } catch {
       alert('Impossibile copiare la password.')
     }
@@ -142,7 +112,7 @@ export default function Credentials() {
       <PageHeader
         icon="🔐"
         title="Password"
-        subtitle="Credenziali cifrate end-to-end"
+        subtitle="Le tue credenziali, protette dal login"
         action={
           <button className="btn btn-primary" onClick={openNew}>
             + Aggiungi
@@ -178,17 +148,20 @@ export default function Credentials() {
                     {item.url}
                   </a>
                 )}
-                <div className="pw-row">
-                  <code className="pw-value">
-                    {revealed[item.id] ? revealed[item.id] : '••••••••••'}
-                  </code>
-                  <button className="chip" onClick={() => toggleReveal(item)}>
-                    {revealed[item.id] ? '🙈 Nascondi' : '👁 Mostra'}
-                  </button>
-                  <button className="chip" onClick={() => copyPassword(item)}>
-                    📋 Copia
-                  </button>
-                </div>
+                {item.password && (
+                  <div className="pw-row">
+                    <code className="pw-value">
+                      {revealed[item.id] ? item.password : '••••••••••'}
+                    </code>
+                    <button className="chip" onClick={() => toggleReveal(item.id)}>
+                      {revealed[item.id] ? '🙈 Nascondi' : '👁 Mostra'}
+                    </button>
+                    <button className="chip" onClick={() => copyPassword(item)}>
+                      📋 Copia
+                    </button>
+                  </div>
+                )}
+                {item.notes && <div className="card-desc">{item.notes}</div>}
                 {item.category && <span className="tag">{item.category}</span>}
               </div>
               <div className="card-actions">
@@ -262,7 +235,7 @@ export default function Credentials() {
                 placeholder="es. Banca, Email, Utenze…"
               />
             </Field>
-            <Field label="Note (cifrate)">
+            <Field label="Note">
               <textarea
                 rows={3}
                 value={form.notes}

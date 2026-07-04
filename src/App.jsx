@@ -1,8 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
-import { useVault } from './context/VaultProvider'
 import Login from './pages/Login'
-import VaultGate from './pages/VaultGate'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Credentials from './pages/Credentials'
@@ -13,7 +11,6 @@ import Spinner from './components/Spinner'
 
 export default function App() {
   const { session, loading } = useAuth()
-  const { status } = useVault()
 
   // Sto ancora recuperando la sessione salvata
   if (loading) return <Spinner full label="Caricamento…" />
@@ -21,10 +18,7 @@ export default function App() {
   // Non autenticato -> schermata di login
   if (!session) return <Login />
 
-  // Autenticato ma cassaforte non ancora sbloccata
-  if (status !== 'unlocked') return <VaultGate />
-
-  // Tutto ok -> applicazione
+  // Autenticato -> applicazione
   return (
     <Routes>
       <Route element={<Layout />}>
