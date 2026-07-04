@@ -60,25 +60,43 @@ async function fnError(error, fallback = 'Errore') {
   return error?.message || fallback
 }
 
-// Invia i chunk all'edge function A LOTTI (per non superare i limiti di CPU
-// dell'edge function con manuali lunghi). onProgress(done, total) aggiorna la UI.
+// Invia un lotto di chunk all'edge function. Se supera il limite di CPU
+// (manuale con testo denso), dimezza il lotto e riprova ricorsivamente.
+async function sendBatch(manualId, items, first, last, done, total, onProgress) {
+  const { error } = await supabase.functions.invoke('manual-ingest', {
+    body: { manual_id: manualId, chunks: items, first, last },
+  })
+  if (error) {
+    if (items.length > 1) {
+      const mid = Math.ceil(items.length / 2)
+      let d = await sendBatch(manualId, items.slice(0, mid), first, false, done, total, onProgress)
+      d = await sendBatch(manualId, items.slice(mid), false, last, d, total, onProgress)
+      return d
+    }
+    throw new Error(await fnError(error, 'Errore di indicizzazione'))
+  }
+  const d = done + items.length
+  onProgress?.(d, total)
+  return d
+}
+
+// Indicizza tutti i chunk A LOTTI (piccoli, per restare sotto il limite di CPU
+// dell'edge function). onProgress(done, total) aggiorna la UI.
 export async function ingestManual(manualId, chunks, onProgress) {
-  const BATCH = 10
+  const BATCH = 4
   const total = chunks.length
+  const items = chunks.map((content, index) => ({ index, content }))
+  let done = 0
   for (let i = 0; i < total; i += BATCH) {
-    const slice = chunks
-      .slice(i, i + BATCH)
-      .map((content, j) => ({ index: i + j, content }))
-    const { error } = await supabase.functions.invoke('manual-ingest', {
-      body: {
-        manual_id: manualId,
-        chunks: slice,
-        first: i === 0,
-        last: i + BATCH >= total,
-      },
-    })
-    if (error) throw new Error(await fnError(error, 'Errore di indicizzazione'))
-    onProgress?.(Math.min(i + BATCH, total), total)
+    done = await sendBatch(
+      manualId,
+      items.slice(i, i + BATCH),
+      i === 0,
+      i + BATCH >= total,
+      done,
+      total,
+      onProgress
+    )
   }
   return { ok: true, n_chunks: total }
 }
