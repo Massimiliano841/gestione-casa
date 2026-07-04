@@ -1,0 +1,40 @@
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { useAuth } from './context/AuthProvider'
+import { useVault } from './context/VaultProvider'
+import Login from './pages/Login'
+import VaultGate from './pages/VaultGate'
+import Layout from './components/Layout'
+import Dashboard from './pages/Dashboard'
+import Credentials from './pages/Credentials'
+import SecureNotes from './pages/SecureNotes'
+import Deadlines from './pages/Deadlines'
+import Automation from './pages/Automation'
+import Spinner from './components/Spinner'
+
+export default function App() {
+  const { session, loading } = useAuth()
+  const { status } = useVault()
+
+  // Sto ancora recuperando la sessione salvata
+  if (loading) return <Spinner full label="Caricamento…" />
+
+  // Non autenticato -> schermata di login
+  if (!session) return <Login />
+
+  // Autenticato ma cassaforte non ancora sbloccata
+  if (status !== 'unlocked') return <VaultGate />
+
+  // Tutto ok -> applicazione
+  return (
+    <Routes>
+      <Route element={<Layout />}>
+        <Route index element={<Dashboard />} />
+        <Route path="password" element={<Credentials />} />
+        <Route path="informazioni" element={<SecureNotes />} />
+        <Route path="scadenze" element={<Deadlines />} />
+        <Route path="domotica" element={<Automation />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Route>
+    </Routes>
+  )
+}
