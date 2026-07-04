@@ -10,9 +10,12 @@ const NAV = [
   { to: '/domotica', label: 'Domotica', icon: '💡' },
 ]
 
+const NAV_ADMIN = { to: '/utenti', label: 'Utenti', icon: '👥' }
+
 export default function Layout() {
-  const { user, signOut } = useAuth()
+  const { username, isAdmin, signOut } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
+  const nav = isAdmin ? [...NAV, NAV_ADMIN] : NAV
 
   return (
     <div className="app-shell">
@@ -23,7 +26,7 @@ export default function Layout() {
         </div>
 
         <nav className="nav">
-          {NAV.map((item) => (
+          {nav.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -38,8 +41,9 @@ export default function Layout() {
         </nav>
 
         <div className="sidebar-footer">
-          <p className="user-email" title={user?.email}>
-            {user?.email}
+          <p className="user-email" title={username}>
+            {isAdmin && '👑 '}
+            {username}
           </p>
           <button className="btn btn-ghost btn-sm" onClick={signOut}>
             🚪 Esci

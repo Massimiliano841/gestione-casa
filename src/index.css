@@ -441,6 +441,10 @@ a {
   background: rgba(79, 140, 255, 0.14);
   color: #a9c6ff;
 }
+.tag-admin {
+  background: rgba(240, 180, 41, 0.16);
+  color: #ffd98a;
+}
 .tag-row {
   display: flex;
   gap: 0.4rem;
