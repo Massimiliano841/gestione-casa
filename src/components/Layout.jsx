@@ -1,6 +1,6 @@
-import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
+import { useTheme } from '../context/ThemeProvider'
 
 const NAV = [
   { to: '/', label: 'Riepilogo', icon: '🏠', end: true },
@@ -12,14 +12,29 @@ const NAV = [
 
 const NAV_ADMIN = { to: '/utenti', label: 'Utenti', icon: '👥' }
 
+function ThemeToggle({ className = 'btn btn-ghost btn-sm', compact = false }) {
+  const { theme, toggleTheme } = useTheme()
+  const dark = theme === 'dark'
+  const label = dark ? 'Passa al tema chiaro' : 'Passa al tema scuro'
+  return (
+    <button
+      className={className}
+      onClick={toggleTheme}
+      aria-label={label}
+      title={label}
+    >
+      {compact ? (dark ? '☀️' : '🌙') : dark ? '☀️ Tema chiaro' : '🌙 Tema scuro'}
+    </button>
+  )
+}
+
 export default function Layout() {
   const { username, isAdmin, signOut } = useAuth()
-  const [menuOpen, setMenuOpen] = useState(false)
   const nav = isAdmin ? [...NAV, NAV_ADMIN] : NAV
 
   return (
     <div className="app-shell">
-      <aside className={menuOpen ? 'sidebar open' : 'sidebar'}>
+      <aside className="sidebar">
         <div className="brand">
           <span className="brand-icon">🏡</span>
           <span className="brand-text">Gestione Casa</span>
@@ -32,7 +47,6 @@ export default function Layout() {
               to={item.to}
               end={item.end}
               className={({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')}
-              onClick={() => setMenuOpen(false)}
             >
               <span className="nav-icon">{item.icon}</span>
               <span>{item.label}</span>
@@ -45,6 +59,7 @@ export default function Layout() {
             {isAdmin && '👑 '}
             {username}
           </p>
+          <ThemeToggle />
           <button className="btn btn-ghost btn-sm" onClick={signOut}>
             🚪 Esci
           </button>
@@ -53,21 +68,42 @@ export default function Layout() {
 
       <div className="main-area">
         <header className="topbar">
-          <button
-            className="menu-toggle"
-            onClick={() => setMenuOpen((v) => !v)}
-            aria-label="Menu"
-          >
-            ☰
-          </button>
-          <span className="topbar-title">Gestione Casa</span>
+          <span className="topbar-title">
+            <span className="brand-icon">🏡</span> Gestione Casa
+          </span>
+          <div className="topbar-actions">
+            <ThemeToggle className="icon-btn topbar-btn" compact />
+            <button
+              className="icon-btn topbar-btn"
+              onClick={signOut}
+              aria-label="Esci"
+              title="Esci"
+            >
+              🚪
+            </button>
+          </div>
         </header>
+
         <main className="content">
           <Outlet />
         </main>
-      </div>
 
-      {menuOpen && <div className="backdrop" onClick={() => setMenuOpen(false)} />}
+        <nav className="bottom-nav">
+          {nav.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.end}
+              className={({ isActive }) =>
+                isActive ? 'bottom-link active' : 'bottom-link'
+              }
+            >
+              <span className="bottom-icon">{item.icon}</span>
+              <span className="bottom-label">{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+      </div>
     </div>
   )
 }
