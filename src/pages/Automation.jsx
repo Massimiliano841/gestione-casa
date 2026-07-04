@@ -25,6 +25,15 @@ function formatHours(slotCount) {
   return (Number.isInteger(h) ? h : h.toFixed(1)) + 'h'
 }
 
+// Durata di una fascia [start, end) espressa in ore/minuti, es. "1h 30m"
+function durationLabel(startSlot, endSlot) {
+  const mins = (endSlot - startSlot) * 30
+  if (mins <= 0) return ''
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return [h ? h + 'h' : '', m ? m + 'm' : ''].filter(Boolean).join(' ')
+}
+
 // Griglia vuota: 7 giorni (0=Lun..6=Dom) x 48 slot, tutti spenti
 function emptyGrid() {
   return DAYS.map(() => SLOTS.map(() => false))
@@ -265,6 +274,7 @@ function DeviceCard({
   onEdit,
   onDelete,
 }) {
+  const [open, setOpen] = useState(false)
   const [days, setDays] = useState([])
   const [startSlot, setStartSlot] = useState(14) // 07:00
   const [endSlot, setEndSlot] = useState(16) // 08:00
@@ -275,21 +285,26 @@ function DeviceCard({
     setDays((d) => (d.includes(di) ? d.filter((x) => x !== di) : [...d, di]))
   }
 
+  const canApply = days.length > 0 && endSlot > startSlot
+  const weekActive = device.schedule.reduce(
+    (sum, col) => sum + col.filter(Boolean).length,
+    0
+  )
+  const sortedDays = days.slice().sort((a, b) => a - b)
+
   function apply() {
-    if (days.length === 0) {
-      setMsg('Seleziona almeno un giorno.')
-      return
-    }
-    if (endSlot <= startSlot) {
-      setMsg('L’orario di fine deve essere dopo l’inizio.')
-      return
-    }
+    if (!canApply) return
     onApplyRange(device.id, days, startSlot, endSlot, active)
     setMsg(
-      `${active ? 'Attivato' : 'Disattivato'} ${slotLabel(startSlot)}–${slotLabel(
+      `${active ? 'Attivata' : 'Disattivata'} fascia ${slotLabel(startSlot)}–${slotLabel(
         endSlot
       )} su ${days.length} ${days.length > 1 ? 'giorni' : 'giorno'}.`
     )
+  }
+
+  function closeModal() {
+    setOpen(false)
+    setMsg('')
   }
 
   return (
@@ -297,18 +312,9 @@ function DeviceCard({
       <div className="sched-card-head">
         <div className="sched-card-title">
           <span className="sched-device">{device.device_name}</span>
-          {device.room && <span className="sched-room">· {device.room}</span>}
+          {device.room && <span className="sched-room-chip">📍 {device.room}</span>}
         </div>
         <div className="card-actions">
-          {dirty && (
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => onSave(device)}
-              disabled={saving}
-            >
-              {saving ? 'Salvataggio…' : '💾 Salva'}
-            </button>
-          )}
           <button className="icon-btn" onClick={() => onEdit(device)} title="Rinomina">
             ✏️
           </button>
@@ -318,92 +324,22 @@ function DeviceCard({
         </div>
       </div>
 
-      {/* Scheda di input */}
-      <div className="sched-input">
-        <div className="sched-input-row">
-          <span className="sched-input-label">Giorni</span>
-          <div className="day-chips">
-            {DAYS.map((d, di) => (
-              <button
-                key={d}
-                type="button"
-                className={days.includes(di) ? 'day-chip on' : 'day-chip'}
-                onClick={() => toggleDay(di)}
-              >
-                {d}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="sched-input-row">
-          <span className="sched-input-label">Rapido</span>
-          <div className="day-chips">
-            {Object.entries(PRESETS).map(([name, list]) => (
-              <button
-                key={name}
-                type="button"
-                className="day-chip preset"
-                onClick={() => setDays(list)}
-              >
-                {name}
-              </button>
-            ))}
-            <button type="button" className="day-chip preset" onClick={() => setDays([])}>
-              Nessuno
-            </button>
-          </div>
-        </div>
-
-        <div className="sched-input-row time-row">
-          <label className="mini-field">
-            <span>Dalle</span>
-            <select
-              value={startSlot}
-              onChange={(e) => setStartSlot(Number(e.target.value))}
-            >
-              {START_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  {slotLabel(s)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="mini-field">
-            <span>Alle</span>
-            <select value={endSlot} onChange={(e) => setEndSlot(Number(e.target.value))}>
-              {END_OPTIONS.map((s) => (
-                <option key={s} value={s}>
-                  {slotLabel(s)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="mini-field">
-            <span>Stato</span>
-            <select
-              value={active ? 'on' : 'off'}
-              onChange={(e) => setActive(e.target.value === 'on')}
-            >
-              <option value="on">Attiva</option>
-              <option value="off">Disattiva</option>
-            </select>
-          </label>
-        </div>
-
-        <div className="sched-input-actions">
-          <button type="button" className="btn btn-primary btn-sm" onClick={apply}>
-            Applica alla griglia
-          </button>
+      <div className="sched-toolbar">
+        <button className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>
+          ⚡ Programma
+        </button>
+        {dirty && (
           <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => onClear(device.id)}
+            className="btn btn-sm btn-save"
+            onClick={() => onSave(device)}
+            disabled={saving}
           >
-            Svuota tutto
+            {saving ? 'Salvataggio…' : '💾 Salva'}
           </button>
-          {msg && <span className="sched-msg">{msg}</span>}
-        </div>
+        )}
+        <span className="sched-total">
+          {weekActive > 0 ? `${formatHours(weekActive)} / settimana` : 'Nessuna fascia'}
+        </span>
       </div>
 
       {/* Griglia solo visiva */}
@@ -443,6 +379,143 @@ function DeviceCard({
           ))}
         </div>
       </div>
+
+      {open && (
+        <Modal
+          title={`⚡ Programma · ${device.device_name}`}
+          onClose={closeModal}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm prog-clear"
+                onClick={() => {
+                  onClear(device.id)
+                  setMsg('Griglia svuotata.')
+                }}
+              >
+                🧹 Svuota tutto
+              </button>
+              <button className="btn btn-ghost" onClick={closeModal}>
+                Chiudi
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={apply}
+                disabled={!canApply}
+              >
+                Applica
+              </button>
+            </>
+          }
+        >
+          <div className="prog-form">
+            <div className="prog-section">
+              <div className="prog-label">Giorni</div>
+              <div className="day-grid">
+                {DAYS.map((d, di) => (
+                  <button
+                    key={d}
+                    type="button"
+                    className={days.includes(di) ? 'day-chip on' : 'day-chip'}
+                    onClick={() => toggleDay(di)}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+              <div className="preset-row">
+                {Object.entries(PRESETS).map(([name, list]) => (
+                  <button
+                    key={name}
+                    type="button"
+                    className="preset-chip"
+                    onClick={() => setDays(list)}
+                  >
+                    {name}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="preset-chip"
+                  onClick={() => setDays([])}
+                >
+                  Nessuno
+                </button>
+              </div>
+            </div>
+
+            <div className="prog-section">
+              <div className="prog-label">Orario</div>
+              <div className="time-range">
+                <select
+                  className="time-select"
+                  value={startSlot}
+                  onChange={(e) => setStartSlot(Number(e.target.value))}
+                >
+                  {START_OPTIONS.map((s) => (
+                    <option key={s} value={s}>
+                      {slotLabel(s)}
+                    </option>
+                  ))}
+                </select>
+                <span className="time-arrow">→</span>
+                <select
+                  className="time-select"
+                  value={endSlot}
+                  onChange={(e) => setEndSlot(Number(e.target.value))}
+                >
+                  {END_OPTIONS.map((s) => (
+                    <option key={s} value={s}>
+                      {slotLabel(s)}
+                    </option>
+                  ))}
+                </select>
+                {endSlot > startSlot && (
+                  <span className="time-dur">{durationLabel(startSlot, endSlot)}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="prog-section">
+              <div className="prog-label">Stato</div>
+              <div className="segmented">
+                <button
+                  type="button"
+                  className={active ? 'seg seg-on' : 'seg'}
+                  onClick={() => setActive(true)}
+                >
+                  Attiva
+                </button>
+                <button
+                  type="button"
+                  className={!active ? 'seg seg-off' : 'seg'}
+                  onClick={() => setActive(false)}
+                >
+                  Disattiva
+                </button>
+              </div>
+            </div>
+
+            <div className={canApply ? 'prog-preview' : 'prog-preview muted-preview'}>
+              {canApply ? (
+                <>
+                  <span className={active ? 'prog-dot on' : 'prog-dot off'} />
+                  <span>
+                    {sortedDays.map((i) => DAYS[i]).join(', ')} ·{' '}
+                    {slotLabel(startSlot)}–{slotLabel(endSlot)} ·{' '}
+                    {active ? 'accesa' : 'spenta'}
+                  </span>
+                </>
+              ) : (
+                'Scegli i giorni e la fascia oraria'
+              )}
+            </div>
+
+            {msg && <div className="prog-msg">✓ {msg}</div>}
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
