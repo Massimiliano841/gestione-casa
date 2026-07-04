@@ -42,26 +42,45 @@ export function chunkText(text, size = 1000, overlap = 150) {
 
 // Legge il messaggio d'errore JSON restituito da un'edge function
 async function fnError(error, fallback = 'Errore') {
-  let msg = error?.message || fallback
+  const ctx = error?.context
   try {
-    const j = await error?.context?.json()
-    if (j?.error) msg = j.error
+    const text = await ctx?.clone?.().text?.()
+    if (text) {
+      try {
+        const j = JSON.parse(text)
+        if (j?.error) return j.error
+      } catch {
+        // non era JSON: usa il testo grezzo (max 200 caratteri)
+        return text.slice(0, 200)
+      }
+    }
   } catch {
-    // ignora: non era JSON
+    // context non leggibile
   }
-  return msg
+  return error?.message || fallback
 }
 
-// Invia i chunk all'edge function che crea gli embedding e li salva
-export async function ingestManual(manualId, chunks) {
-  const { data, error } = await supabase.functions.invoke('manual-ingest', {
-    body: {
-      manual_id: manualId,
-      chunks: chunks.map((content, index) => ({ index, content })),
-    },
-  })
-  if (error) throw new Error(await fnError(error, 'Errore di indicizzazione'))
-  return data
+// Invia i chunk all'edge function A LOTTI (per non superare i limiti di CPU
+// dell'edge function con manuali lunghi). onProgress(done, total) aggiorna la UI.
+export async function ingestManual(manualId, chunks, onProgress) {
+  const BATCH = 10
+  const total = chunks.length
+  for (let i = 0; i < total; i += BATCH) {
+    const slice = chunks
+      .slice(i, i + BATCH)
+      .map((content, j) => ({ index: i + j, content }))
+    const { error } = await supabase.functions.invoke('manual-ingest', {
+      body: {
+        manual_id: manualId,
+        chunks: slice,
+        first: i === 0,
+        last: i + BATCH >= total,
+      },
+    })
+    if (error) throw new Error(await fnError(error, 'Errore di indicizzazione'))
+    onProgress?.(Math.min(i + BATCH, total), total)
+  }
+  return { ok: true, n_chunks: total }
 }
 
 // Pone una domanda sul manuale (RAG + Claude)

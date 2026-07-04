@@ -1,6 +1,8 @@
 // Edge Function "manual-ingest" — genera gli embedding dei chunk di un manuale
 // e li salva in manual_chunks. Gli embedding usano il modello integrato di
 // Supabase (gte-small, 384 dim): nessuna API key esterna necessaria.
+// L'indicizzazione avviene A LOTTI (il client invia blocchi piccoli con i flag
+// first/last) per restare sotto il limite di CPU delle edge function.
 // L'autenticazione avviene con il JWT dell'utente: la RLS scopa i dati per utente.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -24,7 +26,6 @@ Deno.serve(async (req) => {
     const authHeader = req.headers.get('Authorization') || ''
     if (!authHeader) return json({ error: 'Non autenticato' }, 401)
 
-    // Client con il JWT dell'utente -> tutte le query rispettano la RLS
     const supa = createClient(
       Deno.env.get('SUPABASE_URL')!,
       Deno.env.get('SUPABASE_ANON_KEY')!,
@@ -34,6 +35,8 @@ Deno.serve(async (req) => {
     const body = await req.json()
     const manualId = String(body.manual_id || '')
     const chunks = Array.isArray(body.chunks) ? body.chunks : []
+    const first = body.first !== false // default true (compatibilità con chiamate singole)
+    const last = body.last !== false
     if (!manualId) return json({ error: 'manual_id mancante' }, 400)
     if (chunks.length === 0) return json({ error: 'Nessun contenuto da indicizzare' }, 400)
 
@@ -45,6 +48,11 @@ Deno.serve(async (req) => {
       .maybeSingle()
     if (mErr) return json({ error: mErr.message }, 400)
     if (!manual) return json({ error: 'Manuale non trovato' }, 404)
+
+    // Al primo lotto azzera i chunk precedenti (reindicizzazione idempotente)
+    if (first) {
+      await supa.from('manual_chunks').delete().eq('manual_id', manualId)
+    }
 
     // Modello di embedding integrato nell'edge runtime
     // @ts-ignore Supabase.ai è disponibile a runtime
@@ -63,21 +71,25 @@ Deno.serve(async (req) => {
       })
     }
 
-    // Reindicizzazione idempotente: elimina i chunk precedenti di questo manuale
-    await supa.from('manual_chunks').delete().eq('manual_id', manualId)
-
     const { error: insErr } = await supa.from('manual_chunks').insert(rows)
     if (insErr) {
       await supa.from('manuals').update({ status: 'error' }).eq('id', manualId)
       return json({ error: insErr.message }, 400)
     }
 
-    await supa
-      .from('manuals')
-      .update({ status: 'ready', n_chunks: rows.length, updated_at: new Date().toISOString() })
-      .eq('id', manualId)
+    // All'ultimo lotto conta i chunk totali e segna il manuale come pronto
+    if (last) {
+      const { count } = await supa
+        .from('manual_chunks')
+        .select('id', { count: 'exact', head: true })
+        .eq('manual_id', manualId)
+      await supa
+        .from('manuals')
+        .update({ status: 'ready', n_chunks: count || 0, updated_at: new Date().toISOString() })
+        .eq('id', manualId)
+    }
 
-    return json({ ok: true, n_chunks: rows.length })
+    return json({ ok: true, inserted: rows.length })
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500)
   }

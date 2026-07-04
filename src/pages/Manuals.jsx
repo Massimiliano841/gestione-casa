@@ -201,9 +201,11 @@ function UploadModal({ userId, devices, onClose, onDone }) {
         throw new Error('Non sono riuscito a estrarre testo dal PDF (forse è solo immagini/scansione).')
       }
 
-      // 4) indicizza (embedding + salvataggio)
-      setStep(`Indicizzo ${chunks.length} sezioni…`)
-      await ingestManual(manualId, chunks)
+      // 4) indicizza (embedding + salvataggio), a lotti con avanzamento
+      setStep(`Indicizzo 0 / ${chunks.length} sezioni…`)
+      await ingestManual(manualId, chunks, (done, tot) =>
+        setStep(`Indicizzo ${done} / ${tot} sezioni…`)
+      )
 
       await onDone()
     } catch (err) {
