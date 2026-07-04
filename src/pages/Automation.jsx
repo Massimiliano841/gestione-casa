@@ -5,21 +5,39 @@ import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
 
 const DAYS = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
-const HOURS = Array.from({ length: 24 }, (_, h) => h)
+const SLOTS_PER_DAY = 48 // 48 slot da 30 minuti
+const SLOTS = Array.from({ length: SLOTS_PER_DAY }, (_, s) => s)
 
-// Griglia vuota: 7 giorni (0=Lun..6=Dom) x 24 ore, tutte spente
-function emptyGrid() {
-  return DAYS.map(() => HOURS.map(() => false))
+// Etichetta oraria di uno slot: 0->"00:00", 1->"00:30" ... 48->"24:00"
+function slotLabel(s) {
+  const h = Math.floor(s / 2)
+  const m = s % 2 ? '30' : '00'
+  return String(h).padStart(2, '0') + ':' + m
 }
 
-// Normalizza uno schedule arrivato dal DB in una matrice 7x24 di booleani
+// Opzioni per il menu "dalle" (0..47) e "alle" (1..48)
+const START_OPTIONS = SLOTS
+const END_OPTIONS = Array.from({ length: SLOTS_PER_DAY }, (_, i) => i + 1)
+
+// Ore attive di un giorno formattate (ogni slot = mezz'ora)
+function formatHours(slotCount) {
+  const h = slotCount / 2
+  return (Number.isInteger(h) ? h : h.toFixed(1)) + 'h'
+}
+
+// Griglia vuota: 7 giorni (0=Lun..6=Dom) x 48 slot, tutti spenti
+function emptyGrid() {
+  return DAYS.map(() => SLOTS.map(() => false))
+}
+
+// Normalizza uno schedule dal DB in una matrice 7x48 di booleani
 function normalizeSchedule(raw) {
   const grid = emptyGrid()
   if (!Array.isArray(raw)) return grid
   for (let d = 0; d < 7; d++) {
     const col = raw[d]
     if (!Array.isArray(col)) continue
-    for (let h = 0; h < 24; h++) grid[d][h] = Boolean(col[h])
+    for (let s = 0; s < SLOTS_PER_DAY; s++) grid[d][s] = Boolean(col[s])
   }
   return grid
 }
@@ -57,7 +75,6 @@ export default function Automation() {
     setLoading(false)
   }
 
-  // Aggiorna lo schedule di un dispositivo in locale e lo marca "da salvare"
   function updateSchedule(id, updater) {
     setDevices((devs) =>
       devs.map((d) => (d.id === id ? { ...d, schedule: updater(d.schedule) } : d))
@@ -65,30 +82,15 @@ export default function Automation() {
     setDirty((s) => ({ ...s, [id]: true }))
   }
 
-  function toggleCell(id, day, hour) {
+  // Applica una fascia oraria [startSlot, endSlot) sui giorni scelti
+  function applyRange(id, days, startSlot, endSlot, active) {
     updateSchedule(id, (sched) =>
       sched.map((col, di) =>
-        di === day ? col.map((v, hi) => (hi === hour ? !v : v)) : col
+        days.includes(di)
+          ? col.map((v, s) => (s >= startSlot && s < endSlot ? active : v))
+          : col
       )
     )
-  }
-
-  // Tap sull'etichetta dell'ora: accende/spegne quell'ora su tutti i giorni
-  function toggleHour(id, hour) {
-    updateSchedule(id, (sched) => {
-      const anyOff = sched.some((col) => !col[hour])
-      return sched.map((col) => col.map((v, hi) => (hi === hour ? anyOff : v)))
-    })
-  }
-
-  // Copia la colonna "from" sui giorni "targets"
-  function copyDay(id, from, targets) {
-    updateSchedule(id, (sched) => {
-      const source = sched[from]
-      return sched.map((col, di) =>
-        targets.includes(di) && di !== from ? [...source] : col
-      )
-    })
   }
 
   function clearDevice(id) {
@@ -166,7 +168,7 @@ export default function Automation() {
       <PageHeader
         icon="💡"
         title="Domotica"
-        subtitle="Pianificazione settimanale dei dispositivi"
+        subtitle="Pianificazione settimanale (fasce da 30 minuti)"
         action={
           <button className="btn btn-primary" onClick={openNew}>
             + Dispositivo
@@ -192,9 +194,7 @@ export default function Automation() {
               device={device}
               dirty={!!dirty[device.id]}
               saving={!!saving[device.id]}
-              onToggleCell={toggleCell}
-              onToggleHour={toggleHour}
-              onCopyDay={copyDay}
+              onApplyRange={applyRange}
               onClear={clearDevice}
               onSave={saveDevice}
               onEdit={openEdit}
@@ -249,28 +249,47 @@ export default function Automation() {
   )
 }
 
+const PRESETS = {
+  Feriali: [0, 1, 2, 3, 4],
+  Weekend: [5, 6],
+  Tutti: [0, 1, 2, 3, 4, 5, 6],
+}
+
 function DeviceCard({
   device,
   dirty,
   saving,
-  onToggleCell,
-  onToggleHour,
-  onCopyDay,
+  onApplyRange,
   onClear,
   onSave,
   onEdit,
   onDelete,
 }) {
-  const [copyFrom, setCopyFrom] = useState(0)
-  const [copyTo, setCopyTo] = useState('all')
+  const [days, setDays] = useState([])
+  const [startSlot, setStartSlot] = useState(14) // 07:00
+  const [endSlot, setEndSlot] = useState(16) // 08:00
+  const [active, setActive] = useState(true)
+  const [msg, setMsg] = useState('')
 
-  function applyCopy() {
-    let targets
-    if (copyTo === 'all') targets = [0, 1, 2, 3, 4, 5, 6]
-    else if (copyTo === 'weekdays') targets = [0, 1, 2, 3, 4]
-    else if (copyTo === 'weekend') targets = [5, 6]
-    else targets = [Number(copyTo.slice(1))] // "d3" -> giorno 3
-    onCopyDay(device.id, copyFrom, targets)
+  function toggleDay(di) {
+    setDays((d) => (d.includes(di) ? d.filter((x) => x !== di) : [...d, di]))
+  }
+
+  function apply() {
+    if (days.length === 0) {
+      setMsg('Seleziona almeno un giorno.')
+      return
+    }
+    if (endSlot <= startSlot) {
+      setMsg('L’orario di fine deve essere dopo l’inizio.')
+      return
+    }
+    onApplyRange(device.id, days, startSlot, endSlot, active)
+    setMsg(
+      `${active ? 'Attivato' : 'Disattivato'} ${slotLabel(startSlot)}–${slotLabel(
+        endSlot
+      )} su ${days.length} ${days.length > 1 ? 'giorni' : 'giorno'}.`
+    )
   }
 
   return (
@@ -299,6 +318,95 @@ function DeviceCard({
         </div>
       </div>
 
+      {/* Scheda di input */}
+      <div className="sched-input">
+        <div className="sched-input-row">
+          <span className="sched-input-label">Giorni</span>
+          <div className="day-chips">
+            {DAYS.map((d, di) => (
+              <button
+                key={d}
+                type="button"
+                className={days.includes(di) ? 'day-chip on' : 'day-chip'}
+                onClick={() => toggleDay(di)}
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="sched-input-row">
+          <span className="sched-input-label">Rapido</span>
+          <div className="day-chips">
+            {Object.entries(PRESETS).map(([name, list]) => (
+              <button
+                key={name}
+                type="button"
+                className="day-chip preset"
+                onClick={() => setDays(list)}
+              >
+                {name}
+              </button>
+            ))}
+            <button type="button" className="day-chip preset" onClick={() => setDays([])}>
+              Nessuno
+            </button>
+          </div>
+        </div>
+
+        <div className="sched-input-row time-row">
+          <label className="mini-field">
+            <span>Dalle</span>
+            <select
+              value={startSlot}
+              onChange={(e) => setStartSlot(Number(e.target.value))}
+            >
+              {START_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {slotLabel(s)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="mini-field">
+            <span>Alle</span>
+            <select value={endSlot} onChange={(e) => setEndSlot(Number(e.target.value))}>
+              {END_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {slotLabel(s)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="mini-field">
+            <span>Stato</span>
+            <select
+              value={active ? 'on' : 'off'}
+              onChange={(e) => setActive(e.target.value === 'on')}
+            >
+              <option value="on">Attiva</option>
+              <option value="off">Disattiva</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="sched-input-actions">
+          <button type="button" className="btn btn-primary btn-sm" onClick={apply}>
+            Applica alla griglia
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => onClear(device.id)}
+          >
+            Svuota tutto
+          </button>
+          {msg && <span className="sched-msg">{msg}</span>}
+        </div>
+      </div>
+
+      {/* Griglia solo visiva */}
       <div className="sched-scroll">
         <div className="sched-grid">
           <div className="sched-row sched-head-row">
@@ -308,65 +416,32 @@ function DeviceCard({
               return (
                 <div className="sched-day" key={d}>
                   <span>{d}</span>
-                  <span className="sched-day-count">{count}h</span>
+                  <span className="sched-day-count">{formatHours(count)}</span>
                 </div>
               )
             })}
           </div>
 
-          {HOURS.map((h) => (
-            <div className="sched-row" key={h}>
-              <button
-                className="sched-hour-label"
-                onClick={() => onToggleHour(device.id, h)}
-                title="Accendi/spegni quest'ora su tutti i giorni"
+          {SLOTS.map((s) => (
+            <div
+              className={s % 2 === 0 ? 'sched-row hour-start' : 'sched-row'}
+              key={s}
+            >
+              <div
+                className={s % 2 === 0 ? 'sched-hour-label' : 'sched-hour-label half'}
               >
-                {String(h).padStart(2, '0')}
-              </button>
+                {slotLabel(s)}
+              </div>
               {DAYS.map((d, di) => (
-                <button
+                <div
                   key={d}
-                  className={
-                    device.schedule[di][h] ? 'sched-cell on' : 'sched-cell'
-                  }
-                  onClick={() => onToggleCell(device.id, di, h)}
-                  aria-label={`${d} ore ${h}: ${device.schedule[di][h] ? 'attivo' : 'spento'}`}
-                  aria-pressed={device.schedule[di][h]}
+                  className={device.schedule[di][s] ? 'sched-cell on' : 'sched-cell'}
+                  title={`${d} ${slotLabel(s)}`}
                 />
               ))}
             </div>
           ))}
         </div>
-      </div>
-
-      <div className="sched-copy">
-        <span className="sched-copy-label">Copia</span>
-        <select value={copyFrom} onChange={(e) => setCopyFrom(Number(e.target.value))}>
-          {DAYS.map((d, i) => (
-            <option key={d} value={i}>
-              {d}
-            </option>
-          ))}
-        </select>
-        <span className="sched-copy-label">su</span>
-        <select value={copyTo} onChange={(e) => setCopyTo(e.target.value)}>
-          <option value="all">Tutti i giorni</option>
-          <option value="weekdays">Feriali (Lun–Ven)</option>
-          <option value="weekend">Weekend (Sab–Dom)</option>
-          <optgroup label="Un solo giorno">
-            {DAYS.map((d, i) => (
-              <option key={d} value={'d' + i}>
-                {d}
-              </option>
-            ))}
-          </optgroup>
-        </select>
-        <button className="btn btn-sm" onClick={applyCopy}>
-          Applica
-        </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => onClear(device.id)}>
-          Svuota
-        </button>
       </div>
     </div>
   )
