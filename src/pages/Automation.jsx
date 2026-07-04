@@ -597,14 +597,20 @@ function DeviceCard({
 
 function Cell({ zones, view, day, slot }) {
   if (view === 'all') {
+    // Solo le zone attive in questo slot: se sono 0 o 1 la cella resta intera,
+    // si spezza in bande solo dove più zone si sovrappongono.
+    const active = zones.filter((z) => z.schedule[day][slot])
+    if (active.length === 0) return <div className="sched-cell" />
+    if (active.length === 1) {
+      const z = active[0]
+      return (
+        <div className="sched-cell on" style={{ background: z.color, borderColor: z.color }} />
+      )
+    }
     return (
       <div className="sched-cell multi">
-        {zones.map((z) => (
-          <span
-            key={z.id}
-            className="zone-seg"
-            style={{ background: z.schedule[day][slot] ? z.color : 'transparent' }}
-          />
+        {active.map((z) => (
+          <span key={z.id} className="zone-seg" style={{ background: z.color }} />
         ))}
       </div>
     )

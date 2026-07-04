@@ -10,6 +10,7 @@ import {
   askManual,
   pageImageUrls,
   deleteManualFiles,
+  deletePageImages,
 } from '../lib/manuals'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
@@ -28,6 +29,8 @@ export default function Manuals() {
   const [devices, setDevices] = useState([])
   const [loading, setLoading] = useState(true)
   const [uploadOpen, setUploadOpen] = useState(false)
+  const [updateManual, setUpdateManual] = useState(null)
+  const [linkManual, setLinkManual] = useState(null)
   const [chatManual, setChatManual] = useState(null)
 
   useEffect(() => {
@@ -126,6 +129,20 @@ export default function Manuals() {
                   </button>
                   <button
                     className="icon-btn"
+                    onClick={() => setLinkManual(man)}
+                    title={dev ? 'Cambia dispositivo collegato' : 'Collega a un dispositivo'}
+                  >
+                    🔗
+                  </button>
+                  <button
+                    className="icon-btn"
+                    onClick={() => setUpdateManual(man)}
+                    title="Aggiorna il PDF (nuova versione)"
+                  >
+                    ⬆️
+                  </button>
+                  <button
+                    className="icon-btn"
                     onClick={() => handleDelete(man)}
                     title="Elimina"
                   >
@@ -150,6 +167,31 @@ export default function Manuals() {
         />
       )}
 
+      {updateManual && (
+        <UploadModal
+          userId={user?.id}
+          devices={devices}
+          manual={updateManual}
+          onClose={() => setUpdateManual(null)}
+          onDone={async () => {
+            setUpdateManual(null)
+            await load()
+          }}
+        />
+      )}
+
+      {linkManual && (
+        <LinkModal
+          manual={linkManual}
+          devices={devices}
+          onClose={() => setLinkManual(null)}
+          onDone={async () => {
+            setLinkManual(null)
+            await load()
+          }}
+        />
+      )}
+
       {chatManual && (
         <ChatModal manual={chatManual} onClose={() => setChatManual(null)} />
       )}
@@ -157,9 +199,10 @@ export default function Manuals() {
   )
 }
 
-function UploadModal({ userId, devices, onClose, onDone }) {
-  const [title, setTitle] = useState('')
-  const [deviceId, setDeviceId] = useState('')
+function UploadModal({ userId, devices, manual, onClose, onDone }) {
+  const isUpdate = !!manual
+  const [title, setTitle] = useState(manual?.title || '')
+  const [deviceId, setDeviceId] = useState(manual?.device_id || '')
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [step, setStep] = useState('')
@@ -176,24 +219,40 @@ function UploadModal({ userId, devices, onClose, onDone }) {
     if (file.type !== 'application/pdf') return setError('Il file deve essere un PDF.')
     setError('')
     setBusy(true)
-    let manualId = null
+    let manualId = manual?.id || null
     try {
-      // 1) crea la riga del manuale
-      setStep('Creo il manuale…')
-      const { data: created, error: insErr } = await supabase
-        .from('manuals')
-        .insert({
-          title: title.trim() || file.name,
-          filename: file.name,
-          device_id: deviceId || null,
-          status: 'processing',
-        })
-        .select('id')
-        .single()
-      if (insErr) throw insErr
-      manualId = created.id
+      if (isUpdate) {
+        // 1) rimetti il manuale in elaborazione con i nuovi metadati
+        setStep('Preparo l’aggiornamento…')
+        const { error: updErr } = await supabase
+          .from('manuals')
+          .update({
+            title: title.trim() || file.name,
+            filename: file.name,
+            device_id: deviceId || null,
+            status: 'processing',
+            n_pages: 0,
+          })
+          .eq('id', manualId)
+        if (updErr) throw updErr
+      } else {
+        // 1) crea la riga del manuale
+        setStep('Creo il manuale…')
+        const { data: created, error: insErr } = await supabase
+          .from('manuals')
+          .insert({
+            title: title.trim() || file.name,
+            filename: file.name,
+            device_id: deviceId || null,
+            status: 'processing',
+          })
+          .select('id')
+          .single()
+        if (insErr) throw insErr
+        manualId = created.id
+      }
 
-      // 2) carica il PDF nello storage privato
+      // 2) carica il PDF nello storage privato (sovrascrive la versione precedente)
       setStep('Carico il PDF…')
       const path = `${userId}/${manualId}.pdf`
       const { error: upErr } = await supabase.storage
@@ -212,6 +271,12 @@ function UploadModal({ userId, devices, onClose, onDone }) {
         throw new Error('Non sono riuscito a estrarre testo dal PDF (forse è solo immagini/scansione).')
       }
 
+      // 3b) in aggiornamento, rimuovi le immagini della vecchia versione
+      if (isUpdate) {
+        setStep('Rimuovo la versione precedente…')
+        await deletePageImages(userId, manualId)
+      }
+
       // 4) carica le immagini delle pagine
       setStep(`Carico immagini 0 / ${nPages}…`)
       await uploadPages(userId, manualId, pages, (done, tot) =>
@@ -219,7 +284,8 @@ function UploadModal({ userId, devices, onClose, onDone }) {
       )
       await supabase.from('manuals').update({ n_pages: nPages }).eq('id', manualId)
 
-      // 5) indicizza (embedding + salvataggio), a lotti con avanzamento
+      // 5) indicizza (embedding + salvataggio), a lotti con avanzamento.
+      //    Il primo lotto azzera i chunk precedenti: reindicizzazione idempotente.
       setStep(`Indicizzo 0 / ${chunks.length} sezioni…`)
       await ingestManual(manualId, chunks, (done, tot) =>
         setStep(`Indicizzo ${done} / ${tot} sezioni…`)
@@ -235,7 +301,7 @@ function UploadModal({ userId, devices, onClose, onDone }) {
 
   return (
     <Modal
-      title="Nuovo manuale"
+      title={isUpdate ? 'Aggiorna manuale' : 'Nuovo manuale'}
       onClose={busy ? () => {} : onClose}
       footer={
         <>
@@ -247,12 +313,18 @@ function UploadModal({ userId, devices, onClose, onDone }) {
             onClick={handleUpload}
             disabled={busy || !file}
           >
-            {busy ? 'Attendere…' : 'Carica e indicizza'}
+            {busy ? 'Attendere…' : isUpdate ? 'Aggiorna e reindicizza' : 'Carica e indicizza'}
           </button>
         </>
       }
     >
       <form className="form-grid" onSubmit={handleUpload}>
+        {isUpdate && (
+          <p className="alert alert-info">
+            Carica la nuova versione del PDF. Sostituisce il file, le pagine e l’indice
+            AI del manuale «{manual.title}»; il collegamento resta modificabile qui sotto.
+          </p>
+        )}
         <label className="field">
           <span>File PDF *</span>
           <input
@@ -294,6 +366,63 @@ function UploadModal({ userId, devices, onClose, onDone }) {
         )}
         {error && <p className="alert alert-error">{error}</p>}
       </form>
+    </Modal>
+  )
+}
+
+function LinkModal({ manual, devices, onClose, onDone }) {
+  const [deviceId, setDeviceId] = useState(manual.device_id || '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function save() {
+    setBusy(true)
+    setError('')
+    const { error: err } = await supabase
+      .from('manuals')
+      .update({ device_id: deviceId || null })
+      .eq('id', manual.id)
+    if (err) {
+      setBusy(false)
+      return setError(err.message)
+    }
+    await onDone()
+  }
+
+  return (
+    <Modal
+      title="Collega a Domotica"
+      onClose={busy ? () => {} : onClose}
+      footer={
+        <>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            Annulla
+          </button>
+          <button className="btn btn-primary" onClick={save} disabled={busy}>
+            {busy ? 'Salvataggio…' : 'Salva'}
+          </button>
+        </>
+      }
+    >
+      <div className="form-grid">
+        <label className="field">
+          <span>Dispositivo Domotica</span>
+          <select
+            value={deviceId}
+            onChange={(e) => setDeviceId(e.target.value)}
+            disabled={busy}
+          >
+            <option value="">— Nessuno —</option>
+            {devices.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.device_name}
+                {d.room ? ` · ${d.room}` : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+        {error && <p className="alert alert-error">{error}</p>}
+      </div>
     </Modal>
   )
 }

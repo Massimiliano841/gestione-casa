@@ -91,6 +91,14 @@ export async function pageImageUrls(userId, manualId, pageNumbers) {
   return map
 }
 
+// Rimuove solo le immagini delle pagine (usato quando si ricarica una nuova
+// versione del PDF, che può avere un numero di pagine diverso)
+export async function deletePageImages(userId, manualId) {
+  const { data } = await supabase.storage.from('manuals').list(`${userId}/${manualId}`)
+  const paths = (data || []).map((f) => `${userId}/${manualId}/${f.name}`)
+  if (paths.length) await supabase.storage.from('manuals').remove(paths)
+}
+
 // Rimuove dal bucket il PDF e tutte le immagini delle pagine di un manuale
 export async function deleteManualFiles(userId, manualId, storagePath) {
   const paths = []
