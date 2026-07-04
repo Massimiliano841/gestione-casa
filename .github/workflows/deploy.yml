@@ -44,7 +44,19 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
     steps:
+      # A volte Pages risponde "Deployment failed, try again later" (intoppo
+      # transitorio lato GitHub). Primo tentativo tollerante: non fa fallire il job.
       - id: deployment
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Attendi prima di riprovare
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+
+      # Secondo tentativo: se fallisce anche questo, allora il job fallisce davvero.
+      - id: deployment-retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
