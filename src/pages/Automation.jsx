@@ -9,24 +9,21 @@ const DAYS = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
 const SLOTS_PER_DAY = 48 // 48 slot da 30 minuti
 const SLOTS = Array.from({ length: SLOTS_PER_DAY }, (_, s) => s)
 
-// Etichetta oraria di uno slot: 0->"00:00", 1->"00:30" ... 48->"24:00"
+// Palette per le zone
+const COLORS = [
+  '#4f8cff', '#38c793', '#f0b429', '#ef5b6f',
+  '#a06bff', '#12b5cb', '#ff8a3d', '#e05fae',
+]
+
 function slotLabel(s) {
   const h = Math.floor(s / 2)
   const m = s % 2 ? '30' : '00'
   return String(h).padStart(2, '0') + ':' + m
 }
 
-// Opzioni per il menu "dalle" (0..47) e "alle" (1..48)
 const START_OPTIONS = SLOTS
 const END_OPTIONS = Array.from({ length: SLOTS_PER_DAY }, (_, i) => i + 1)
 
-// Ore attive di un giorno formattate (ogni slot = mezz'ora)
-function formatHours(slotCount) {
-  const h = slotCount / 2
-  return (Number.isInteger(h) ? h : h.toFixed(1)) + 'h'
-}
-
-// Durata di una fascia [start, end) espressa in ore/minuti, es. "1h 30m"
 function durationLabel(startSlot, endSlot) {
   const mins = (endSlot - startSlot) * 30
   if (mins <= 0) return ''
@@ -35,12 +32,15 @@ function durationLabel(startSlot, endSlot) {
   return [h ? h + 'h' : '', m ? m + 'm' : ''].filter(Boolean).join(' ')
 }
 
-// Griglia vuota: 7 giorni (0=Lun..6=Dom) x 48 slot, tutti spenti
+function formatHours(slotCount) {
+  const h = slotCount / 2
+  return (Number.isInteger(h) ? h : h.toFixed(1)) + 'h'
+}
+
 function emptyGrid() {
   return DAYS.map(() => SLOTS.map(() => false))
 }
 
-// Normalizza uno schedule dal DB in una matrice 7x48 di booleani
 function normalizeSchedule(raw) {
   const grid = emptyGrid()
   if (!Array.isArray(raw)) return grid
@@ -52,14 +52,23 @@ function normalizeSchedule(raw) {
   return grid
 }
 
+// Conta gli slot attivi per giorno considerando l'unione delle zone
+function unionDayCount(zones, day) {
+  let c = 0
+  for (const s of SLOTS) {
+    if (zones.some((z) => z.schedule[day][s])) c++
+  }
+  return c
+}
+
 export default function Automation() {
   const navigate = useNavigate()
   const [devices, setDevices] = useState([])
   const [manualByDevice, setManualByDevice] = useState({})
   const [loading, setLoading] = useState(true)
-  const [dirty, setDirty] = useState({})
-  const [saving, setSaving] = useState({})
-  const [openIds, setOpenIds] = useState([]) // dispositivi espansi (accordion)
+  const [dirty, setDirty] = useState({}) // per zona
+  const [saving, setSaving] = useState({}) // per dispositivo
+  const [openIds, setOpenIds] = useState([])
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ device_name: '', room: '' })
@@ -71,33 +80,38 @@ export default function Automation() {
 
   async function load() {
     setLoading(true)
-    const [{ data, error }, { data: mans }] = await Promise.all([
-      supabase.from('automation_schedule').select('*').order('device_name', { ascending: true }),
-      supabase
-        .from('manuals')
-        .select('id, title, status, device_id')
-        .not('device_id', 'is', null),
+    const [{ data: devs }, { data: zones }, { data: mans }] = await Promise.all([
+      supabase.from('automation_schedule').select('id, device_name, room').order('device_name'),
+      supabase.from('automation_zones').select('*').order('sort_order'),
+      supabase.from('manuals').select('id, title, status, device_id').not('device_id', 'is', null),
     ])
-    if (error) console.error(error)
-    // Mappa dispositivo -> manuale collegato (il primo pronto, se c'è)
-    const byDev = {}
-    for (const m of mans || []) {
-      if (!byDev[m.device_id] || m.status === 'ready') byDev[m.device_id] = m
+    const zonesByDevice = {}
+    for (const z of zones || []) {
+      ;(zonesByDevice[z.device_id] ||= []).push({
+        id: z.id,
+        name: z.name,
+        color: z.color,
+        sort_order: z.sort_order,
+        schedule: normalizeSchedule(z.schedule),
+      })
     }
-    setManualByDevice(byDev)
-    const list = (data || []).map((d) => ({
+    const list = (devs || []).map((d) => ({
       id: d.id,
       device_name: d.device_name,
       room: d.room,
-      schedule: normalizeSchedule(d.schedule),
+      zones: zonesByDevice[d.id] || [],
     }))
     setDevices(list)
-    // Mantieni aperti quelli già espansi; se ce n'è uno solo aprilo per comodità
     setOpenIds((prev) => {
       const existing = prev.filter((id) => list.some((d) => d.id === id))
       if (existing.length) return existing
       return list.length === 1 ? [list[0].id] : []
     })
+    const byDev = {}
+    for (const m of mans || []) {
+      if (!byDev[m.device_id] || m.status === 'ready') byDev[m.device_id] = m
+    }
+    setManualByDevice(byDev)
     setDirty({})
     setLoading(false)
   }
@@ -106,16 +120,25 @@ export default function Automation() {
     setOpenIds((o) => (o.includes(id) ? o.filter((x) => x !== id) : [...o, id]))
   }
 
-  function updateSchedule(id, updater) {
+  // Aggiorna la pianificazione di una zona in locale
+  function updateZone(deviceId, zoneId, updater) {
     setDevices((devs) =>
-      devs.map((d) => (d.id === id ? { ...d, schedule: updater(d.schedule) } : d))
+      devs.map((d) =>
+        d.id !== deviceId
+          ? d
+          : {
+              ...d,
+              zones: d.zones.map((z) =>
+                z.id === zoneId ? { ...z, schedule: updater(z.schedule) } : z
+              ),
+            }
+      )
     )
-    setDirty((s) => ({ ...s, [id]: true }))
+    setDirty((s) => ({ ...s, [zoneId]: true }))
   }
 
-  // Applica una fascia oraria [startSlot, endSlot) sui giorni scelti
-  function applyRange(id, days, startSlot, endSlot, active) {
-    updateSchedule(id, (sched) =>
+  function applyRange(deviceId, zoneId, days, startSlot, endSlot, active) {
+    updateZone(deviceId, zoneId, (sched) =>
       sched.map((col, di) =>
         days.includes(di)
           ? col.map((v, s) => (s >= startSlot && s < endSlot ? active : v))
@@ -124,21 +147,85 @@ export default function Automation() {
     )
   }
 
-  function clearDevice(id) {
-    updateSchedule(id, () => emptyGrid())
+  function clearZone(deviceId, zoneId) {
+    updateZone(deviceId, zoneId, () => emptyGrid())
   }
 
   async function saveDevice(device) {
+    const toSave = device.zones.filter((z) => dirty[z.id])
+    if (toSave.length === 0) return
     setSaving((s) => ({ ...s, [device.id]: true }))
-    const { error } = await supabase
-      .from('automation_schedule')
-      .update({ schedule: device.schedule, updated_at: new Date().toISOString() })
-      .eq('id', device.id)
+    for (const z of toSave) {
+      const { error } = await supabase
+        .from('automation_zones')
+        .update({ schedule: z.schedule, updated_at: new Date().toISOString() })
+        .eq('id', z.id)
+      if (error) {
+        setSaving((s) => ({ ...s, [device.id]: false }))
+        return alert('Errore nel salvataggio: ' + error.message)
+      }
+    }
     setSaving((s) => ({ ...s, [device.id]: false }))
-    if (error) return alert('Errore nel salvataggio: ' + error.message)
     setDirty((s) => {
       const next = { ...s }
-      delete next[device.id]
+      for (const z of toSave) delete next[z.id]
+      return next
+    })
+  }
+
+  // ---- gestione zone (metadati salvati subito su DB) ----
+  async function addZone(device) {
+    const used = new Set(device.zones.map((z) => z.color))
+    const color = COLORS.find((c) => !used.has(c)) || COLORS[device.zones.length % COLORS.length]
+    const sort_order = device.zones.reduce((m, z) => Math.max(m, z.sort_order), -1) + 1
+    const name = `Zona ${device.zones.length + 1}`
+    const { data, error } = await supabase
+      .from('automation_zones')
+      .insert({ device_id: device.id, name, color, sort_order, schedule: emptyGrid() })
+      .select('*')
+      .single()
+    if (error) return alert('Errore: ' + error.message)
+    setDevices((devs) =>
+      devs.map((d) =>
+        d.id !== device.id
+          ? d
+          : {
+              ...d,
+              zones: [
+                ...d.zones,
+                { id: data.id, name: data.name, color: data.color, sort_order: data.sort_order, schedule: emptyGrid() },
+              ],
+            }
+      )
+    )
+    return data.id
+  }
+
+  async function updateZoneMeta(deviceId, zoneId, patch) {
+    setDevices((devs) =>
+      devs.map((d) =>
+        d.id !== deviceId
+          ? d
+          : { ...d, zones: d.zones.map((z) => (z.id === zoneId ? { ...z, ...patch } : z)) }
+      )
+    )
+    const { error } = await supabase.from('automation_zones').update(patch).eq('id', zoneId)
+    if (error) alert('Errore: ' + error.message)
+  }
+
+  async function deleteZone(device, zoneId) {
+    if (device.zones.length <= 1) return alert('Un dispositivo deve avere almeno una zona.')
+    if (!confirm('Eliminare questa zona e la sua pianificazione?')) return
+    const { error } = await supabase.from('automation_zones').delete().eq('id', zoneId)
+    if (error) return alert('Errore: ' + error.message)
+    setDevices((devs) =>
+      devs.map((d) =>
+        d.id !== device.id ? d : { ...d, zones: d.zones.filter((z) => z.id !== zoneId) }
+      )
+    )
+    setDirty((s) => {
+      const next = { ...s }
+      delete next[zoneId]
       return next
     })
   }
@@ -160,10 +247,7 @@ export default function Automation() {
     setBusy(true)
     let newId = null
     try {
-      const row = {
-        device_name: form.device_name.trim(),
-        room: form.room.trim() || null,
-      }
+      const row = { device_name: form.device_name.trim(), room: form.room.trim() || null }
       if (editing) {
         const { error } = await supabase
           .from('automation_schedule')
@@ -178,10 +262,17 @@ export default function Automation() {
           .single()
         if (error) throw error
         newId = created?.id
+        // ogni nuovo dispositivo nasce con una zona "Principale"
+        await supabase.from('automation_zones').insert({
+          device_id: newId,
+          name: 'Principale',
+          color: COLORS[0],
+          sort_order: 0,
+          schedule: emptyGrid(),
+        })
       }
       setModalOpen(false)
       await load()
-      // Apri il dispositivo appena creato
       if (newId) setOpenIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]))
     } catch (err) {
       alert('Errore: ' + err.message)
@@ -191,11 +282,8 @@ export default function Automation() {
   }
 
   async function deleteDevice(device) {
-    if (!confirm(`Eliminare "${device.device_name}" e la sua pianificazione?`)) return
-    const { error } = await supabase
-      .from('automation_schedule')
-      .delete()
-      .eq('id', device.id)
+    if (!confirm(`Eliminare "${device.device_name}" e tutte le sue zone?`)) return
+    const { error } = await supabase.from('automation_schedule').delete().eq('id', device.id)
     if (error) return alert('Errore: ' + error.message)
     await load()
   }
@@ -205,7 +293,7 @@ export default function Automation() {
       <PageHeader
         icon="💡"
         title="Domotica"
-        subtitle="Pianificazione settimanale (fasce da 30 minuti)"
+        subtitle="Pianificazione settimanale · zone multiple"
         action={
           <button className="btn btn-primary" onClick={openNew}>
             + Dispositivo
@@ -229,17 +317,20 @@ export default function Automation() {
             <DeviceCard
               key={device.id}
               device={device}
-              dirty={!!dirty[device.id]}
+              dirty={device.zones.some((z) => dirty[z.id])}
               saving={!!saving[device.id]}
               open={openIds.includes(device.id)}
               manual={manualByDevice[device.id]}
               onToggle={() => toggleOpen(device.id)}
               onOpenManual={(m) => navigate('/manuali', { state: { openManualId: m.id } })}
               onApplyRange={applyRange}
-              onClear={clearDevice}
+              onClear={clearZone}
               onSave={saveDevice}
               onEdit={openEdit}
               onDelete={deleteDevice}
+              onAddZone={addZone}
+              onUpdateZoneMeta={updateZoneMeta}
+              onDeleteZone={deleteZone}
             />
           ))}
         </div>
@@ -270,7 +361,7 @@ export default function Automation() {
               <input
                 value={form.device_name}
                 onChange={(e) => setForm({ ...form, device_name: e.target.value })}
-                placeholder="es. Caldaia, Luci giardino, Termostato…"
+                placeholder="es. Irrigazione, Caldaia, Luci giardino…"
                 autoFocus
                 required
               />
@@ -280,7 +371,7 @@ export default function Automation() {
               <input
                 value={form.room}
                 onChange={(e) => setForm({ ...form, room: e.target.value })}
-                placeholder="es. Salotto, Esterno…"
+                placeholder="es. Giardino, Salotto…"
               />
             </label>
           </form>
@@ -309,38 +400,22 @@ function DeviceCard({
   onSave,
   onEdit,
   onDelete,
+  onAddZone,
+  onUpdateZoneMeta,
+  onDeleteZone,
 }) {
   const [progOpen, setProgOpen] = useState(false)
-  const [days, setDays] = useState([])
-  const [startSlot, setStartSlot] = useState(14) // 07:00
-  const [endSlot, setEndSlot] = useState(16) // 08:00
-  const [active, setActive] = useState(true)
-  const [msg, setMsg] = useState('')
+  const [view, setView] = useState('all') // 'all' oppure zoneId
+  const [editZone, setEditZone] = useState(null)
 
-  function toggleDay(di) {
-    setDays((d) => (d.includes(di) ? d.filter((x) => x !== di) : [...d, di]))
-  }
+  const zones = device.zones
+  // se la zona filtrata non esiste più, torna a "Tutte"
+  const activeView = view !== 'all' && zones.some((z) => z.id === view) ? view : 'all'
+  const weekActive = DAYS.reduce((sum, _, di) => sum + unionDayCount(zones, di), 0)
 
-  const canApply = days.length > 0 && endSlot > startSlot
-  const weekActive = device.schedule.reduce(
-    (sum, col) => sum + col.filter(Boolean).length,
-    0
-  )
-  const sortedDays = days.slice().sort((a, b) => a - b)
-
-  function apply() {
-    if (!canApply) return
-    onApplyRange(device.id, days, startSlot, endSlot, active)
-    setMsg(
-      `${active ? 'Attivata' : 'Disattivata'} fascia ${slotLabel(startSlot)}–${slotLabel(
-        endSlot
-      )} su ${days.length} ${days.length > 1 ? 'giorni' : 'giorno'}.`
-    )
-  }
-
-  function closeModal() {
-    setProgOpen(false)
-    setMsg('')
+  async function handleAddZone() {
+    const id = await onAddZone(device)
+    if (id) setView(id)
   }
 
   return (
@@ -359,19 +434,17 @@ function DeviceCard({
           </span>
           {!open && (
             <span className="acc-mini" title="Ore attive per giorno (Lun→Dom)">
-              {device.schedule.map((col, di) => {
-                const pct = Math.round((col.filter(Boolean).length / SLOTS_PER_DAY) * 100)
+              {DAYS.map((d, di) => {
+                const pct = Math.round((unionDayCount(zones, di) / SLOTS_PER_DAY) * 100)
                 return (
-                  <span className="acc-bar-track" key={di}>
+                  <span className="acc-bar-track" key={d}>
                     <span className="acc-bar" style={{ height: pct + '%' }} />
                   </span>
                 )
               })}
             </span>
           )}
-          <span className="acc-total">
-            {weekActive > 0 ? formatHours(weekActive) : '—'}
-          </span>
+          <span className="acc-total">{weekActive > 0 ? formatHours(weekActive) : '—'}</span>
         </button>
         {dirty && !open && (
           <button
@@ -425,13 +498,50 @@ function DeviceCard({
             </span>
           </div>
 
-          {/* Griglia solo visiva */}
+          {/* Barra delle zone: filtro + gestione */}
+          <div className="zone-bar">
+            <button
+              className={activeView === 'all' ? 'zone-chip on' : 'zone-chip'}
+              onClick={() => setView('all')}
+            >
+              Tutte
+            </button>
+            {zones.map((z) => (
+              <button
+                key={z.id}
+                className={activeView === z.id ? 'zone-chip on' : 'zone-chip'}
+                onClick={() => setView(z.id)}
+                onDoubleClick={() => setEditZone(z)}
+                title="Doppio click per rinominare/colore"
+              >
+                <span className="zone-dot" style={{ background: z.color }} />
+                {z.name}
+              </button>
+            ))}
+            {activeView !== 'all' && (
+              <button
+                className="zone-chip zone-edit"
+                onClick={() => setEditZone(zones.find((z) => z.id === activeView))}
+                title="Modifica zona"
+              >
+                ✎
+              </button>
+            )}
+            <button className="zone-chip zone-add" onClick={handleAddZone} title="Aggiungi zona">
+              +
+            </button>
+          </div>
+
+          {/* Griglia visiva (bande colorate per zona) */}
           <div className="sched-scroll">
             <div className="sched-grid">
               <div className="sched-row sched-head-row">
                 <div className="sched-hour-label sched-corner">Ora</div>
                 {DAYS.map((d, di) => {
-                  const count = device.schedule[di].filter(Boolean).length
+                  const count =
+                    activeView === 'all'
+                      ? unionDayCount(zones, di)
+                      : (zones.find((z) => z.id === activeView)?.schedule[di].filter(Boolean).length || 0)
                   return (
                     <div className="sched-day" key={d}>
                       <span>{d}</span>
@@ -442,20 +552,17 @@ function DeviceCard({
               </div>
 
               {SLOTS.map((s) => (
-                <div
-                  className={s % 2 === 0 ? 'sched-row hour-start' : 'sched-row'}
-                  key={s}
-                >
-                  <div
-                    className={s % 2 === 0 ? 'sched-hour-label' : 'sched-hour-label half'}
-                  >
+                <div className={s % 2 === 0 ? 'sched-row hour-start' : 'sched-row'} key={s}>
+                  <div className={s % 2 === 0 ? 'sched-hour-label' : 'sched-hour-label half'}>
                     {slotLabel(s)}
                   </div>
                   {DAYS.map((d, di) => (
-                    <div
+                    <Cell
                       key={d}
-                      className={device.schedule[di][s] ? 'sched-cell on' : 'sched-cell'}
-                      title={`${d} ${slotLabel(s)}`}
+                      zones={zones}
+                      view={activeView}
+                      day={di}
+                      slot={s}
                     />
                   ))}
                 </div>
@@ -466,141 +573,278 @@ function DeviceCard({
       )}
 
       {progOpen && (
-        <Modal
-          title={`⚡ Programma · ${device.device_name}`}
-          onClose={closeModal}
-          footer={
-            <>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm prog-clear"
-                onClick={() => {
-                  onClear(device.id)
-                  setMsg('Griglia svuotata.')
-                }}
-              >
-                🧹 Svuota tutto
-              </button>
-              <button className="btn btn-ghost" onClick={closeModal}>
-                Chiudi
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={apply}
-                disabled={!canApply}
-              >
-                Applica
-              </button>
-            </>
-          }
-        >
-          <div className="prog-form">
-            <div className="prog-section">
-              <div className="prog-label">Giorni</div>
-              <div className="day-grid">
-                {DAYS.map((d, di) => (
-                  <button
-                    key={d}
-                    type="button"
-                    className={days.includes(di) ? 'day-chip on' : 'day-chip'}
-                    onClick={() => toggleDay(di)}
-                  >
-                    {d}
-                  </button>
-                ))}
-              </div>
-              <div className="preset-row">
-                {Object.entries(PRESETS).map(([name, list]) => (
-                  <button
-                    key={name}
-                    type="button"
-                    className="preset-chip"
-                    onClick={() => setDays(list)}
-                  >
-                    {name}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="preset-chip"
-                  onClick={() => setDays([])}
-                >
-                  Nessuno
-                </button>
-              </div>
-            </div>
+        <ProgramModal
+          device={device}
+          defaultZone={activeView !== 'all' ? activeView : zones[0]?.id}
+          onClose={() => setProgOpen(false)}
+          onApplyRange={onApplyRange}
+          onClear={onClear}
+        />
+      )}
 
-            <div className="prog-section">
-              <div className="prog-label">Orario</div>
-              <div className="time-range">
-                <select
-                  className="time-select"
-                  value={startSlot}
-                  onChange={(e) => setStartSlot(Number(e.target.value))}
-                >
-                  {START_OPTIONS.map((s) => (
-                    <option key={s} value={s}>
-                      {slotLabel(s)}
-                    </option>
-                  ))}
-                </select>
-                <span className="time-arrow">→</span>
-                <select
-                  className="time-select"
-                  value={endSlot}
-                  onChange={(e) => setEndSlot(Number(e.target.value))}
-                >
-                  {END_OPTIONS.map((s) => (
-                    <option key={s} value={s}>
-                      {slotLabel(s)}
-                    </option>
-                  ))}
-                </select>
-                {endSlot > startSlot && (
-                  <span className="time-dur">{durationLabel(startSlot, endSlot)}</span>
-                )}
-              </div>
-            </div>
-
-            <div className="prog-section">
-              <div className="prog-label">Stato</div>
-              <div className="segmented">
-                <button
-                  type="button"
-                  className={active ? 'seg seg-on' : 'seg'}
-                  onClick={() => setActive(true)}
-                >
-                  Attiva
-                </button>
-                <button
-                  type="button"
-                  className={!active ? 'seg seg-off' : 'seg'}
-                  onClick={() => setActive(false)}
-                >
-                  Disattiva
-                </button>
-              </div>
-            </div>
-
-            <div className={canApply ? 'prog-preview' : 'prog-preview muted-preview'}>
-              {canApply ? (
-                <>
-                  <span className={active ? 'prog-dot on' : 'prog-dot off'} />
-                  <span>
-                    {sortedDays.map((i) => DAYS[i]).join(', ')} ·{' '}
-                    {slotLabel(startSlot)}–{slotLabel(endSlot)} ·{' '}
-                    {active ? 'accesa' : 'spenta'}
-                  </span>
-                </>
-              ) : (
-                'Scegli i giorni e la fascia oraria'
-              )}
-            </div>
-
-            {msg && <div className="prog-msg">✓ {msg}</div>}
-          </div>
-        </Modal>
+      {editZone && (
+        <ZoneEditModal
+          device={device}
+          zone={editZone}
+          onClose={() => setEditZone(null)}
+          onUpdateMeta={onUpdateZoneMeta}
+          onDelete={onDeleteZone}
+        />
       )}
     </div>
+  )
+}
+
+function Cell({ zones, view, day, slot }) {
+  if (view === 'all') {
+    return (
+      <div className="sched-cell multi">
+        {zones.map((z) => (
+          <span
+            key={z.id}
+            className="zone-seg"
+            style={{ background: z.schedule[day][slot] ? z.color : 'transparent' }}
+          />
+        ))}
+      </div>
+    )
+  }
+  const z = zones.find((x) => x.id === view)
+  const on = z && z.schedule[day][slot]
+  return (
+    <div
+      className={on ? 'sched-cell on' : 'sched-cell'}
+      style={on ? { background: z.color, borderColor: z.color } : undefined}
+    />
+  )
+}
+
+function ProgramModal({ device, defaultZone, onClose, onApplyRange, onClear }) {
+  const [zoneId, setZoneId] = useState(defaultZone || device.zones[0]?.id)
+  const [days, setDays] = useState([])
+  const [startSlot, setStartSlot] = useState(14)
+  const [endSlot, setEndSlot] = useState(16)
+  const [active, setActive] = useState(true)
+  const [msg, setMsg] = useState('')
+
+  const zone = device.zones.find((z) => z.id === zoneId) || device.zones[0]
+  const canApply = !!zone && days.length > 0 && endSlot > startSlot
+  const sortedDays = days.slice().sort((a, b) => a - b)
+
+  function toggleDay(di) {
+    setDays((d) => (d.includes(di) ? d.filter((x) => x !== di) : [...d, di]))
+  }
+
+  function apply() {
+    if (!canApply) return
+    onApplyRange(device.id, zone.id, days, startSlot, endSlot, active)
+    setMsg(
+      `${active ? 'Attivata' : 'Disattivata'} fascia ${slotLabel(startSlot)}–${slotLabel(
+        endSlot
+      )} su ${days.length} ${days.length > 1 ? 'giorni' : 'giorno'} (${zone.name}).`
+    )
+  }
+
+  return (
+    <Modal
+      title={`⚡ Programma · ${device.device_name}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm prog-clear"
+            onClick={() => {
+              onClear(device.id, zone.id)
+              setMsg(`Svuotata la zona ${zone.name}.`)
+            }}
+          >
+            🧹 Svuota zona
+          </button>
+          <button className="btn btn-ghost" onClick={onClose}>
+            Chiudi
+          </button>
+          <button className="btn btn-primary" onClick={apply} disabled={!canApply}>
+            Applica
+          </button>
+        </>
+      }
+    >
+      <div className="prog-form">
+        {device.zones.length > 1 && (
+          <div className="prog-section">
+            <div className="prog-label">Zona</div>
+            <div className="preset-row">
+              {device.zones.map((z) => (
+                <button
+                  key={z.id}
+                  type="button"
+                  className={z.id === zoneId ? 'zone-chip on' : 'zone-chip'}
+                  onClick={() => setZoneId(z.id)}
+                >
+                  <span className="zone-dot" style={{ background: z.color }} />
+                  {z.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="prog-section">
+          <div className="prog-label">Giorni</div>
+          <div className="day-grid">
+            {DAYS.map((d, di) => (
+              <button
+                key={d}
+                type="button"
+                className={days.includes(di) ? 'day-chip on' : 'day-chip'}
+                onClick={() => toggleDay(di)}
+              >
+                {d}
+              </button>
+            ))}
+          </div>
+          <div className="preset-row">
+            {Object.entries(PRESETS).map(([name, list]) => (
+              <button key={name} type="button" className="preset-chip" onClick={() => setDays(list)}>
+                {name}
+              </button>
+            ))}
+            <button type="button" className="preset-chip" onClick={() => setDays([])}>
+              Nessuno
+            </button>
+          </div>
+        </div>
+
+        <div className="prog-section">
+          <div className="prog-label">Orario</div>
+          <div className="time-range">
+            <select
+              className="time-select"
+              value={startSlot}
+              onChange={(e) => setStartSlot(Number(e.target.value))}
+            >
+              {START_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {slotLabel(s)}
+                </option>
+              ))}
+            </select>
+            <span className="time-arrow">→</span>
+            <select
+              className="time-select"
+              value={endSlot}
+              onChange={(e) => setEndSlot(Number(e.target.value))}
+            >
+              {END_OPTIONS.map((s) => (
+                <option key={s} value={s}>
+                  {slotLabel(s)}
+                </option>
+              ))}
+            </select>
+            {endSlot > startSlot && (
+              <span className="time-dur">{durationLabel(startSlot, endSlot)}</span>
+            )}
+          </div>
+        </div>
+
+        <div className="prog-section">
+          <div className="prog-label">Stato</div>
+          <div className="segmented">
+            <button
+              type="button"
+              className={active ? 'seg seg-on' : 'seg'}
+              onClick={() => setActive(true)}
+            >
+              Attiva
+            </button>
+            <button
+              type="button"
+              className={!active ? 'seg seg-off' : 'seg'}
+              onClick={() => setActive(false)}
+            >
+              Disattiva
+            </button>
+          </div>
+        </div>
+
+        <div className={canApply ? 'prog-preview' : 'prog-preview muted-preview'}>
+          {canApply ? (
+            <>
+              <span className="prog-dot" style={{ background: zone.color }} />
+              <span>
+                {zone.name} · {sortedDays.map((i) => DAYS[i]).join(', ')} ·{' '}
+                {slotLabel(startSlot)}–{slotLabel(endSlot)} · {active ? 'accesa' : 'spenta'}
+              </span>
+            </>
+          ) : (
+            'Scegli zona, giorni e fascia oraria'
+          )}
+        </div>
+
+        {msg && <div className="prog-msg">✓ {msg}</div>}
+      </div>
+    </Modal>
+  )
+}
+
+function ZoneEditModal({ device, zone, onClose, onUpdateMeta, onDelete }) {
+  const [name, setName] = useState(zone.name)
+  const [color, setColor] = useState(zone.color)
+
+  function save() {
+    const patch = {}
+    if (name.trim() && name.trim() !== zone.name) patch.name = name.trim()
+    if (color !== zone.color) patch.color = color
+    if (Object.keys(patch).length) onUpdateMeta(device.id, zone.id, patch)
+    onClose()
+  }
+
+  return (
+    <Modal
+      title="Zona"
+      onClose={onClose}
+      footer={
+        <>
+          <button
+            className="btn btn-ghost btn-sm prog-clear"
+            onClick={() => {
+              onDelete(device, zone.id)
+              onClose()
+            }}
+          >
+            🗑 Elimina zona
+          </button>
+          <button className="btn btn-ghost" onClick={onClose}>
+            Annulla
+          </button>
+          <button className="btn btn-primary" onClick={save}>
+            Salva
+          </button>
+        </>
+      }
+    >
+      <div className="form-grid">
+        <label className="field">
+          <span>Nome zona</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+        </label>
+        <div className="field">
+          <span>Colore</span>
+          <div className="color-row">
+            {COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                className={c === color ? 'color-swatch on' : 'color-swatch'}
+                style={{ background: c }}
+                onClick={() => setColor(c)}
+                aria-label={c}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </Modal>
   )
 }

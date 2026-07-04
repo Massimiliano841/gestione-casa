@@ -34,7 +34,7 @@ export default function Dashboard() {
         .limit(5),
       supabase
         .from('automation_schedule')
-        .select('device_name, room, schedule')
+        .select('id, device_name, room, automation_zones(schedule)')
         .order('device_name', { ascending: true }),
     ])
 
@@ -50,14 +50,17 @@ export default function Dashboard() {
 
   if (loading) return <Spinner label="Caricamento…" />
 
-  // Stato "adesso" dei dispositivi in base alla pianificazione settimanale
+  // Stato "adesso" dei dispositivi: attivo se una qualsiasi zona è attiva ora
   const now = new Date()
   const dayIdx = (now.getDay() + 6) % 7 // JS: Dom=0 -> nostro Lun=0..Dom=6
-  const hour = now.getHours()
+  const slot = now.getHours() * 2 + (now.getMinutes() >= 30 ? 1 : 0) // slot da 30 min
   const deviceStatus = devices.map((d) => {
-    const grid = Array.isArray(d.schedule) ? d.schedule : []
-    const col = Array.isArray(grid[dayIdx]) ? grid[dayIdx] : []
-    return { name: d.device_name, room: d.room, active: Boolean(col[hour]) }
+    const zones = Array.isArray(d.automation_zones) ? d.automation_zones : []
+    const active = zones.some((z) => {
+      const col = Array.isArray(z.schedule?.[dayIdx]) ? z.schedule[dayIdx] : []
+      return Boolean(col[slot])
+    })
+    return { name: d.device_name, room: d.room, active }
   })
 
   return (
