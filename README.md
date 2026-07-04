@@ -13,14 +13,13 @@ Frontend **React + Vite**, backend **Supabase** (database + login), hosting grat
 
 ## 🔒 Come funziona la sicurezza
 
-Ci sono **due password diverse**, tienile a mente:
+I tuoi dati sono protetti da:
 
-1. **Password di accesso (login)** — email + password, gestita da Supabase. Serve per entrare.
-2. **Master password** — la scegli al primo accesso. Con questa vengono **cifrate** le tue password e note *dentro il browser*, prima di essere inviate al database.
+- 🔑 **Login** (email + password) gestito da Supabase Auth
+- 🛡️ **Row Level Security**: ogni utente vede e modifica solo i propri dati
+- 🔒 **HTTPS** per il traffico + database Supabase cifrato su disco
 
-Questo significa che nel database Supabase le password sono salvate **illeggibili**: nemmeno chi avesse accesso al database potrebbe leggerle senza la master password.
-
-> ⚠️ **La master password NON è recuperabile.** Se la dimentichi, i dati cifrati (password e informazioni) sono persi per sempre. Annotala in un posto sicuro. Scadenze e domotica non sono cifrate e restano leggibili.
+Modello adatto a un'app personale. Nota: i dati non sono cifrati end-to-end, quindi chi avesse accesso diretto al database Supabase potrebbe leggerli. Per l'uso domestico è un compromesso ragionevole tra sicurezza e comodità (nessuna master password da ricordare).
 
 ---
 
@@ -87,10 +86,8 @@ Perché il login funzioni dal sito pubblico, aggiungi l'URL di GitHub Pages tra 
 ## 👤 Primo accesso
 
 1. Apri l'app → **Registrati** con la tua email e una password.
-2. **Conferma l'email** (Supabase ti invia un link).
-   - _In alternativa_, per un'app di uso personale puoi disattivare la conferma email in **Supabase → Authentication → Sign In / Providers → Email → "Confirm email" OFF**, così entri subito.
-3. Accedi → crea la tua **master password**.
-4. Inizia ad aggiungere password, informazioni, scadenze e attività di domotica.
+2. Entri subito nell'app (la conferma email è disattivata in **Supabase → Authentication → Sign In / Providers → Email**).
+3. Inizia ad aggiungere password, informazioni, scadenze e attività di domotica.
 
 ---
 
@@ -98,13 +95,12 @@ Perché il login funzioni dal sito pubblico, aggiungi l'URL di GitHub Pages tra 
 
 Tutte le tabelle hanno **Row Level Security**: ogni utente vede solo i propri dati.
 
-| Tabella | Contenuto | Campi cifrati |
-|---------|-----------|---------------|
-| `credentials` | Password e credenziali | `password_enc`, `notes_enc` |
-| `secure_notes` | Informazioni importanti | `content_enc` |
-| `deadlines` | Scadenze | — |
-| `automation_log` | Registro domotica | — |
-| `vault_meta` | Sale + verificatore master password | — |
+| Tabella | Contenuto |
+|---------|-----------|
+| `credentials` | Password e credenziali |
+| `secure_notes` | Informazioni importanti |
+| `deadlines` | Scadenze |
+| `automation_log` | Registro domotica |
 
 ---
 
@@ -112,7 +108,6 @@ Tutte le tabelle hanno **Row Level Security**: ogni utente vede solo i propri da
 
 - React 19 + Vite 8 + React Router (HashRouter)
 - Supabase (PostgreSQL, Auth, RLS)
-- Crittografia: Web Crypto API — PBKDF2 (SHA-256, 210.000 iterazioni) + AES-GCM 256 bit
 
 ## 📁 Struttura del progetto
 
@@ -120,14 +115,11 @@ Tutte le tabelle hanno **Row Level Security**: ogni utente vede solo i propri da
 src/
   lib/
     supabase.js       Client Supabase
-    crypto.js         Cifratura/decifratura (master password)
   context/
     AuthProvider.jsx  Stato login
-    VaultProvider.jsx Stato cassaforte cifrata
   components/         Layout, Modal, Spinner, PageHeader
   pages/
     Login.jsx         Accesso / registrazione
-    VaultGate.jsx     Crea / sblocca master password
     Dashboard.jsx     Riepilogo
     Credentials.jsx   🔐 Password
     SecureNotes.jsx   📄 Informazioni
