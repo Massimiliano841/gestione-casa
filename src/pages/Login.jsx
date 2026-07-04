@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { usernameToEmail } from '../lib/auth'
+import { versionLabel } from '../lib/version'
 
 export default function Login() {
   const [username, setUsername] = useState('')
@@ -72,6 +73,7 @@ export default function Login() {
             {busy ? 'Attendere…' : 'Entra →'}
           </button>
         </form>
+        <p className="app-version">{versionLabel()}</p>
       </div>
     </div>
   )

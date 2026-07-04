@@ -352,6 +352,27 @@ a {
   align-items: center;
   gap: 0.4rem;
 }
+.topbar-version {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+}
+.app-version {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  opacity: 0.75;
+  margin: 0.5rem 0 0;
+  text-align: center;
+  word-break: break-word;
+}
+.sidebar-footer .app-version {
+  text-align: left;
+  padding: 0 0.4rem;
+}
 .topbar-actions {
   display: flex;
   align-items: center;

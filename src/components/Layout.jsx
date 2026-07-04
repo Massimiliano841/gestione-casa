@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
 import { useTheme } from '../context/ThemeProvider'
+import { APP_VERSION, versionLabel } from '../lib/version'
 
 const NAV = [
   { to: '/', label: 'Riepilogo', icon: '🏠', end: true },
@@ -63,6 +64,7 @@ export default function Layout() {
           <button className="btn btn-ghost btn-sm" onClick={signOut}>
             🚪 Esci
           </button>
+          <p className="app-version">{versionLabel()}</p>
         </div>
       </aside>
 
@@ -70,6 +72,9 @@ export default function Layout() {
         <header className="topbar">
           <span className="topbar-title">
             <span className="brand-icon">🏡</span> Gestione Casa
+            <span className="topbar-version" title={versionLabel()}>
+              v{APP_VERSION}
+            </span>
           </span>
           <div className="topbar-actions">
             <ThemeToggle className="icon-btn topbar-btn" compact />
