@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
+import ManualChat from '../components/ManualChat'
 
 const DAYS = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom']
 const SLOTS_PER_DAY = 48 // 48 slot da 30 minuti
@@ -62,9 +62,9 @@ function unionDayCount(zones, day) {
 }
 
 export default function Automation() {
-  const navigate = useNavigate()
   const [devices, setDevices] = useState([])
   const [manualByDevice, setManualByDevice] = useState({})
+  const [chatManual, setChatManual] = useState(null)
   const [loading, setLoading] = useState(true)
   const [dirty, setDirty] = useState({}) // per zona
   const [saving, setSaving] = useState({}) // per dispositivo
@@ -83,7 +83,10 @@ export default function Automation() {
     const [{ data: devs }, { data: zones }, { data: mans }] = await Promise.all([
       supabase.from('automation_schedule').select('id, device_name, room').order('device_name'),
       supabase.from('automation_zones').select('*').order('sort_order'),
-      supabase.from('manuals').select('id, title, status, device_id').not('device_id', 'is', null),
+      supabase
+        .from('manuals')
+        .select('id, title, status, device_id, user_id')
+        .not('device_id', 'is', null),
     ])
     const zonesByDevice = {}
     for (const z of zones || []) {
@@ -322,7 +325,7 @@ export default function Automation() {
               open={openIds.includes(device.id)}
               manual={manualByDevice[device.id]}
               onToggle={() => toggleOpen(device.id)}
-              onOpenManual={(m) => navigate('/manuali', { state: { openManualId: m.id } })}
+              onOpenManual={(m) => setChatManual(m)}
               onApplyRange={applyRange}
               onClear={clearZone}
               onSave={saveDevice}
@@ -376,6 +379,10 @@ export default function Automation() {
             </label>
           </form>
         </Modal>
+      )}
+
+      {chatManual && (
+        <ManualChat manual={chatManual} onClose={() => setChatManual(null)} />
       )}
     </div>
   )
