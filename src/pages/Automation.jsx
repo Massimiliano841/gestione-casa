@@ -56,6 +56,7 @@ export default function Automation() {
   const [loading, setLoading] = useState(true)
   const [dirty, setDirty] = useState({})
   const [saving, setSaving] = useState({})
+  const [openIds, setOpenIds] = useState([]) // dispositivi espansi (accordion)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ device_name: '', room: '' })
@@ -72,16 +73,25 @@ export default function Automation() {
       .select('*')
       .order('device_name', { ascending: true })
     if (error) console.error(error)
-    setDevices(
-      (data || []).map((d) => ({
-        id: d.id,
-        device_name: d.device_name,
-        room: d.room,
-        schedule: normalizeSchedule(d.schedule),
-      }))
-    )
+    const list = (data || []).map((d) => ({
+      id: d.id,
+      device_name: d.device_name,
+      room: d.room,
+      schedule: normalizeSchedule(d.schedule),
+    }))
+    setDevices(list)
+    // Mantieni aperti quelli già espansi; se ce n'è uno solo aprilo per comodità
+    setOpenIds((prev) => {
+      const existing = prev.filter((id) => list.some((d) => d.id === id))
+      if (existing.length) return existing
+      return list.length === 1 ? [list[0].id] : []
+    })
     setDirty({})
     setLoading(false)
+  }
+
+  function toggleOpen(id) {
+    setOpenIds((o) => (o.includes(id) ? o.filter((x) => x !== id) : [...o, id]))
   }
 
   function updateSchedule(id, updater) {
@@ -136,6 +146,7 @@ export default function Automation() {
   async function handleSaveDevice(e) {
     e.preventDefault()
     setBusy(true)
+    let newId = null
     try {
       const row = {
         device_name: form.device_name.trim(),
@@ -148,13 +159,18 @@ export default function Automation() {
           .eq('id', editing.id)
         if (error) throw error
       } else {
-        const { error } = await supabase
+        const { data: created, error } = await supabase
           .from('automation_schedule')
           .insert({ ...row, schedule: emptyGrid() })
+          .select('id')
+          .single()
         if (error) throw error
+        newId = created?.id
       }
       setModalOpen(false)
       await load()
+      // Apri il dispositivo appena creato
+      if (newId) setOpenIds((prev) => (prev.includes(newId) ? prev : [...prev, newId]))
     } catch (err) {
       alert('Errore: ' + err.message)
     } finally {
@@ -203,6 +219,8 @@ export default function Automation() {
               device={device}
               dirty={!!dirty[device.id]}
               saving={!!saving[device.id]}
+              open={openIds.includes(device.id)}
+              onToggle={() => toggleOpen(device.id)}
               onApplyRange={applyRange}
               onClear={clearDevice}
               onSave={saveDevice}
@@ -268,13 +286,15 @@ function DeviceCard({
   device,
   dirty,
   saving,
+  open,
+  onToggle,
   onApplyRange,
   onClear,
   onSave,
   onEdit,
   onDelete,
 }) {
-  const [open, setOpen] = useState(false)
+  const [progOpen, setProgOpen] = useState(false)
   const [days, setDays] = useState([])
   const [startSlot, setStartSlot] = useState(14) // 07:00
   const [endSlot, setEndSlot] = useState(16) // 08:00
@@ -303,84 +323,119 @@ function DeviceCard({
   }
 
   function closeModal() {
-    setOpen(false)
+    setProgOpen(false)
     setMsg('')
   }
 
   return (
-    <div className="sched-card">
-      <div className="sched-card-head">
-        <div className="sched-card-title">
-          <span className="sched-device">{device.device_name}</span>
-          {device.room && <span className="sched-room-chip">📍 {device.room}</span>}
-        </div>
-        <div className="card-actions">
-          <button className="icon-btn" onClick={() => onEdit(device)} title="Rinomina">
-            ✏️
-          </button>
-          <button className="icon-btn" onClick={() => onDelete(device)} title="Elimina">
-            🗑
-          </button>
-        </div>
-      </div>
-
-      <div className="sched-toolbar">
-        <button className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>
-          ⚡ Programma
+    <div className={open ? 'sched-card acc-open' : 'sched-card'}>
+      <div className="acc-header">
+        <button
+          className="acc-main"
+          onClick={onToggle}
+          aria-expanded={open}
+          title={open ? 'Comprimi' : 'Espandi'}
+        >
+          <span className="acc-chevron">{open ? '▾' : '▸'}</span>
+          <span className="acc-titlewrap">
+            <span className="sched-device">{device.device_name}</span>
+            {device.room && <span className="acc-room">📍 {device.room}</span>}
+          </span>
+          {!open && (
+            <span className="acc-mini" title="Ore attive per giorno (Lun→Dom)">
+              {device.schedule.map((col, di) => {
+                const pct = Math.round((col.filter(Boolean).length / SLOTS_PER_DAY) * 100)
+                return (
+                  <span className="acc-bar-track" key={di}>
+                    <span className="acc-bar" style={{ height: pct + '%' }} />
+                  </span>
+                )
+              })}
+            </span>
+          )}
+          <span className="acc-total">
+            {weekActive > 0 ? formatHours(weekActive) : '—'}
+          </span>
         </button>
-        {dirty && (
+        {dirty && !open && (
           <button
             className="btn btn-sm btn-save"
             onClick={() => onSave(device)}
             disabled={saving}
+            title="Salva"
           >
-            {saving ? 'Salvataggio…' : '💾 Salva'}
+            💾
           </button>
         )}
-        <span className="sched-total">
-          {weekActive > 0 ? `${formatHours(weekActive)} / settimana` : 'Nessuna fascia'}
-        </span>
-      </div>
-
-      {/* Griglia solo visiva */}
-      <div className="sched-scroll">
-        <div className="sched-grid">
-          <div className="sched-row sched-head-row">
-            <div className="sched-hour-label sched-corner">Ora</div>
-            {DAYS.map((d, di) => {
-              const count = device.schedule[di].filter(Boolean).length
-              return (
-                <div className="sched-day" key={d}>
-                  <span>{d}</span>
-                  <span className="sched-day-count">{formatHours(count)}</span>
-                </div>
-              )
-            })}
-          </div>
-
-          {SLOTS.map((s) => (
-            <div
-              className={s % 2 === 0 ? 'sched-row hour-start' : 'sched-row'}
-              key={s}
-            >
-              <div
-                className={s % 2 === 0 ? 'sched-hour-label' : 'sched-hour-label half'}
-              >
-                {slotLabel(s)}
-              </div>
-              {DAYS.map((d, di) => (
-                <div
-                  key={d}
-                  className={device.schedule[di][s] ? 'sched-cell on' : 'sched-cell'}
-                  title={`${d} ${slotLabel(s)}`}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
       </div>
 
       {open && (
+        <div className="acc-body">
+          <div className="sched-toolbar">
+            <button className="btn btn-primary btn-sm" onClick={() => setProgOpen(true)}>
+              ⚡ Programma
+            </button>
+            {dirty && (
+              <button
+                className="btn btn-sm btn-save"
+                onClick={() => onSave(device)}
+                disabled={saving}
+              >
+                {saving ? 'Salvataggio…' : '💾 Salva'}
+              </button>
+            )}
+            <button className="icon-btn" onClick={() => onEdit(device)} title="Rinomina">
+              ✏️
+            </button>
+            <button className="icon-btn" onClick={() => onDelete(device)} title="Elimina">
+              🗑
+            </button>
+            <span className="sched-total">
+              {weekActive > 0 ? `${formatHours(weekActive)} / settimana` : 'Nessuna fascia'}
+            </span>
+          </div>
+
+          {/* Griglia solo visiva */}
+          <div className="sched-scroll">
+            <div className="sched-grid">
+              <div className="sched-row sched-head-row">
+                <div className="sched-hour-label sched-corner">Ora</div>
+                {DAYS.map((d, di) => {
+                  const count = device.schedule[di].filter(Boolean).length
+                  return (
+                    <div className="sched-day" key={d}>
+                      <span>{d}</span>
+                      <span className="sched-day-count">{formatHours(count)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {SLOTS.map((s) => (
+                <div
+                  className={s % 2 === 0 ? 'sched-row hour-start' : 'sched-row'}
+                  key={s}
+                >
+                  <div
+                    className={s % 2 === 0 ? 'sched-hour-label' : 'sched-hour-label half'}
+                  >
+                    {slotLabel(s)}
+                  </div>
+                  {DAYS.map((d, di) => (
+                    <div
+                      key={d}
+                      className={device.schedule[di][s] ? 'sched-cell on' : 'sched-cell'}
+                      title={`${d} ${slotLabel(s)}`}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {progOpen && (
         <Modal
           title={`⚡ Programma · ${device.device_name}`}
           onClose={closeModal}

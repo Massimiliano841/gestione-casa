@@ -761,6 +761,105 @@ a {
   white-space: nowrap;
 }
 
+/* Accordion (vista a tenda) */
+.sched-card {
+  transition: border-color 0.15s ease;
+}
+.sched-card.acc-open {
+  border-color: var(--primary);
+}
+.acc-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.acc-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.1rem 0;
+  font-family: inherit;
+  color: var(--text);
+  text-align: left;
+}
+.acc-chevron {
+  flex-shrink: 0;
+  width: 0.9rem;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+.acc-titlewrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1;
+}
+.acc-titlewrap .sched-device {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acc-room {
+  max-width: 100%;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acc-mini {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.acc-bar-track {
+  width: 5px;
+  height: 100%;
+  background: var(--panel-2);
+  border-radius: 2px;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+.acc-bar {
+  width: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+}
+.acc-total {
+  flex-shrink: 0;
+  min-width: 2.4rem;
+  text-align: right;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+.acc-body {
+  margin-top: 0.9rem;
+  animation: accOpen 0.18s ease;
+}
+@keyframes accOpen {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Popup "Programma" */
 .prog-form {
   display: flex;
