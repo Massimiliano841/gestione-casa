@@ -108,12 +108,23 @@ Deno.serve(async (req) => {
       .join('\n')
       .trim()
 
+    // pagine citate, distinte e ordinate
+    const pages = [
+      ...new Set(
+        chunks
+          .map((c: { page: number | null }) => c.page)
+          .filter((p: number | null) => typeof p === 'number')
+      ),
+    ].sort((a, b) => a - b)
+
     return json({
       answer: answer || 'Nessuna risposta generata.',
-      sources: chunks.map((c: { chunk_index: number }, i: number) => ({
+      sources: chunks.map((c: { chunk_index: number; page: number | null }, i: number) => ({
         n: i + 1,
         chunk_index: c.chunk_index,
+        page: c.page,
       })),
+      pages,
     })
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500)

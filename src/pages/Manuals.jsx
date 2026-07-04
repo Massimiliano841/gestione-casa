@@ -2,7 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthProvider'
-import { extractPdfText, chunkText, ingestManual, askManual } from '../lib/manuals'
+import {
+  processPdf,
+  buildChunks,
+  uploadPages,
+  ingestManual,
+  askManual,
+  pageImageUrls,
+  deleteManualFiles,
+} from '../lib/manuals'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
 import Spinner from '../components/Spinner'
@@ -51,10 +59,8 @@ export default function Manuals() {
 
   async function handleDelete(man) {
     if (!confirm(`Eliminare il manuale "${man.title}"?`)) return
-    // rimuovi il PDF dallo storage (best effort) poi la riga (i chunk cascano)
-    if (man.storage_path) {
-      await supabase.storage.from('manuals').remove([man.storage_path])
-    }
+    // rimuovi PDF + immagini pagine (best effort), poi la riga (i chunk cascano)
+    await deleteManualFiles(man.user_id, man.id, man.storage_path)
     const { error } = await supabase.from('manuals').delete().eq('id', man.id)
     if (error) return alert('Errore: ' + error.message)
     await load()
@@ -96,6 +102,9 @@ export default function Manuals() {
                     <span className={`tag ${st.cls}`}>{st.label}</span>
                     {man.status === 'ready' && (
                       <span className="tag">{man.n_chunks} sezioni</span>
+                    )}
+                    {man.status === 'ready' && man.n_pages > 0 && (
+                      <span className="tag">📄 {man.n_pages} pagine</span>
                     )}
                     {dev && (
                       <span className="tag tag-soft">
@@ -193,15 +202,24 @@ function UploadModal({ userId, devices, onClose, onDone }) {
       if (upErr) throw upErr
       await supabase.from('manuals').update({ storage_path: path }).eq('id', manualId)
 
-      // 3) estrai il testo e spezzalo in blocchi
-      setStep('Estraggo il testo…')
-      const text = await extractPdfText(file)
-      const chunks = chunkText(text)
+      // 3) elabora il PDF: testo + immagini delle pagine
+      setStep('Elaboro il PDF…')
+      const { pages, nPages } = await processPdf(file, (done, tot) =>
+        setStep(`Elaboro pagina ${done} / ${tot}…`)
+      )
+      const chunks = buildChunks(pages)
       if (chunks.length === 0) {
         throw new Error('Non sono riuscito a estrarre testo dal PDF (forse è solo immagini/scansione).')
       }
 
-      // 4) indicizza (embedding + salvataggio), a lotti con avanzamento
+      // 4) carica le immagini delle pagine
+      setStep(`Carico immagini 0 / ${nPages}…`)
+      await uploadPages(userId, manualId, pages, (done, tot) =>
+        setStep(`Carico immagini ${done} / ${tot}…`)
+      )
+      await supabase.from('manuals').update({ n_pages: nPages }).eq('id', manualId)
+
+      // 5) indicizza (embedding + salvataggio), a lotti con avanzamento
       setStep(`Indicizzo 0 / ${chunks.length} sezioni…`)
       await ingestManual(manualId, chunks, (done, tot) =>
         setStep(`Indicizzo ${done} / ${tot} sezioni…`)
@@ -284,6 +302,7 @@ function ChatModal({ manual, onClose }) {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [lightbox, setLightbox] = useState(null)
   const listRef = useRef(null)
 
   useEffect(() => {
@@ -300,9 +319,17 @@ function ChatModal({ manual, onClose }) {
     setBusy(true)
     try {
       const res = await askManual(manual.id, q, history)
+      // recupera le immagini delle pagine citate (URL firmati temporanei)
+      let pageImgs = []
+      if (res.pages && res.pages.length) {
+        const map = await pageImageUrls(manual.user_id, manual.id, res.pages)
+        pageImgs = res.pages
+          .filter((p) => map[p])
+          .map((p) => ({ page: p, url: map[p] }))
+      }
       setMessages((m) => [
         ...m,
-        { role: 'assistant', content: res.answer, sources: res.sources },
+        { role: 'assistant', content: res.answer, sources: res.sources, pageImgs },
       ])
     } catch (err) {
       setMessages((m) => [
@@ -321,19 +348,34 @@ function ChatModal({ manual, onClose }) {
           {messages.length === 0 && (
             <p className="chat-hint">
               Fai una domanda sul manuale, ad esempio “come imposto la temperatura?”.
-              Le risposte usano solo il contenuto del PDF.
+              Le risposte usano solo il contenuto del PDF e mostrano le pagine di riferimento.
             </p>
           )}
           {messages.map((m, i) => (
             <div
               key={i}
-              className={
-                m.role === 'user' ? 'chat-msg chat-user' : 'chat-msg chat-bot'
-              }
+              className={m.role === 'user' ? 'chat-msg chat-user' : 'chat-msg chat-bot'}
             >
               <div className="chat-bubble">{m.content}</div>
+              {m.pageImgs && m.pageImgs.length > 0 && (
+                <div className="chat-pages">
+                  {m.pageImgs.map((pg) => (
+                    <button
+                      key={pg.page}
+                      className="chat-page"
+                      onClick={() => setLightbox(pg)}
+                      title={`Pagina ${pg.page} — clicca per ingrandire`}
+                    >
+                      <img src={pg.url} alt={`Pagina ${pg.page}`} loading="lazy" />
+                      <span className="chat-page-label">Pag. {pg.page}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               {m.sources && m.sources.length > 0 && (
-                <div className="chat-sources">Fonti: {m.sources.map((s) => `[${s.n}]`).join(' ')}</div>
+                <div className="chat-sources">
+                  Fonti: {m.sources.map((s) => `[${s.n}]`).join(' ')}
+                </div>
               )}
             </div>
           ))}
@@ -355,6 +397,13 @@ function ChatModal({ manual, onClose }) {
           </button>
         </form>
       </div>
+
+      {lightbox && (
+        <div className="lightbox" onClick={() => setLightbox(null)}>
+          <img src={lightbox.url} alt={`Pagina ${lightbox.page}`} />
+          <div className="lightbox-label">Pagina {lightbox.page} — tocca per chiudere</div>
+        </div>
+      )}
     </Modal>
   )
 }

@@ -66,6 +66,7 @@ Deno.serve(async (req) => {
       rows.push({
         manual_id: manualId,
         chunk_index: typeof chunks[i].index === 'number' ? chunks[i].index : i,
+        page: typeof chunks[i].page === 'number' ? chunks[i].page : null,
         content,
         embedding,
       })

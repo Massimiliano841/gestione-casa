@@ -4,22 +4,35 @@ import { supabase } from './supabase'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
-// Estrae tutto il testo da un PDF nel browser
-export async function extractPdfText(file) {
+// Elabora il PDF nel browser: per ogni pagina estrae il testo e la renderizza
+// come immagine JPEG. onProgress(done, total).
+export async function processPdf(file, onProgress) {
   const buf = await file.arrayBuffer()
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise
-  let text = ''
-  for (let p = 1; p <= pdf.numPages; p++) {
+  const nPages = pdf.numPages
+  const pages = []
+  const canvas = document.createElement('canvas')
+  const ctx = canvas.getContext('2d')
+  for (let p = 1; p <= nPages; p++) {
     const page = await pdf.getPage(p)
     const content = await page.getTextContent()
-    const line = content.items.map((it) => (it && it.str) || '').join(' ')
-    text += line + '\n\n'
+    const text = content.items.map((it) => (it && it.str) || '').join(' ')
+
+    const vp1 = page.getViewport({ scale: 1 })
+    const scale = Math.min(1400 / vp1.width, 2) // larghezza ~1400px, max 2x
+    const viewport = page.getViewport({ scale })
+    canvas.width = Math.floor(viewport.width)
+    canvas.height = Math.floor(viewport.height)
+    await page.render({ canvasContext: ctx, viewport }).promise
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.72))
+
+    pages.push({ page: p, text, blob })
+    onProgress?.(p, nPages)
   }
-  return text
+  return { pages, nPages }
 }
 
-// Spezza il testo in blocchi ~1000 caratteri con un po' di sovrapposizione,
-// tagliando dove possibile a fine frase/riga
+// Spezza il testo in blocchi ~1000 caratteri con un po' di sovrapposizione
 export function chunkText(text, size = 1000, overlap = 150) {
   const clean = text.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
   const chunks = []
@@ -40,6 +53,53 @@ export function chunkText(text, size = 1000, overlap = 150) {
   return chunks
 }
 
+// Costruisce i chunk taggati con la pagina di provenienza
+export function buildChunks(pages) {
+  const chunks = []
+  for (const pg of pages) {
+    for (const c of chunkText(pg.text)) chunks.push({ content: c, page: pg.page })
+  }
+  return chunks
+}
+
+// Carica le immagini delle pagine nello storage privato. onProgress(done, total).
+export async function uploadPages(userId, manualId, pages, onProgress) {
+  let done = 0
+  for (const pg of pages) {
+    if (pg.blob) {
+      const path = `${userId}/${manualId}/p${pg.page}.jpg`
+      const { error } = await supabase.storage
+        .from('manuals')
+        .upload(path, pg.blob, { contentType: 'image/jpeg', upsert: true })
+      if (error) throw new Error(`Caricamento pagina ${pg.page}: ${error.message}`)
+    }
+    done++
+    onProgress?.(done, pages.length)
+  }
+}
+
+// URL firmati (temporanei) per le immagini di alcune pagine
+export async function pageImageUrls(userId, manualId, pageNumbers) {
+  const nums = [...new Set((pageNumbers || []).filter((p) => typeof p === 'number'))]
+  if (nums.length === 0) return {}
+  const paths = nums.map((p) => `${userId}/${manualId}/p${p}.jpg`)
+  const { data } = await supabase.storage.from('manuals').createSignedUrls(paths, 3600)
+  const map = {}
+  ;(data || []).forEach((d, i) => {
+    if (d && d.signedUrl && !d.error) map[nums[i]] = d.signedUrl
+  })
+  return map
+}
+
+// Rimuove dal bucket il PDF e tutte le immagini delle pagine di un manuale
+export async function deleteManualFiles(userId, manualId, storagePath) {
+  const paths = []
+  if (storagePath) paths.push(storagePath)
+  const { data } = await supabase.storage.from('manuals').list(`${userId}/${manualId}`)
+  for (const f of data || []) paths.push(`${userId}/${manualId}/${f.name}`)
+  if (paths.length) await supabase.storage.from('manuals').remove(paths)
+}
+
 // Legge il messaggio d'errore JSON restituito da un'edge function
 async function fnError(error, fallback = 'Errore') {
   const ctx = error?.context
@@ -50,7 +110,6 @@ async function fnError(error, fallback = 'Errore') {
         const j = JSON.parse(text)
         if (j?.error) return j.error
       } catch {
-        // non era JSON: usa il testo grezzo (max 200 caratteri)
         return text.slice(0, 200)
       }
     }
@@ -60,8 +119,8 @@ async function fnError(error, fallback = 'Errore') {
   return error?.message || fallback
 }
 
-// Invia un lotto di chunk all'edge function. Se supera il limite di CPU
-// (manuale con testo denso), dimezza il lotto e riprova ricorsivamente.
+// Invia un lotto di chunk (con pagina) all'edge function. Se supera il limite
+// di CPU, dimezza il lotto e riprova ricorsivamente.
 async function sendBatch(manualId, items, first, last, done, total, onProgress) {
   const { error } = await supabase.functions.invoke('manual-ingest', {
     body: { manual_id: manualId, chunks: items, first, last },
@@ -80,12 +139,11 @@ async function sendBatch(manualId, items, first, last, done, total, onProgress) 
   return d
 }
 
-// Indicizza tutti i chunk A LOTTI (piccoli, per restare sotto il limite di CPU
-// dell'edge function). onProgress(done, total) aggiorna la UI.
+// Indicizza i chunk (con pagina) a lotti piccoli. onProgress(done, total).
 export async function ingestManual(manualId, chunks, onProgress) {
   const BATCH = 4
   const total = chunks.length
-  const items = chunks.map((content, index) => ({ index, content }))
+  const items = chunks.map((c, index) => ({ index, content: c.content, page: c.page }))
   let done = 0
   for (let i = 0; i < total; i += BATCH) {
     done = await sendBatch(
