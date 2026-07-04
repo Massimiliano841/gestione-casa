@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import PageHeader from '../components/PageHeader'
 import Modal from '../components/Modal'
@@ -52,7 +53,9 @@ function normalizeSchedule(raw) {
 }
 
 export default function Automation() {
+  const navigate = useNavigate()
   const [devices, setDevices] = useState([])
+  const [manualByDevice, setManualByDevice] = useState({})
   const [loading, setLoading] = useState(true)
   const [dirty, setDirty] = useState({})
   const [saving, setSaving] = useState({})
@@ -68,11 +71,20 @@ export default function Automation() {
 
   async function load() {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('automation_schedule')
-      .select('*')
-      .order('device_name', { ascending: true })
+    const [{ data, error }, { data: mans }] = await Promise.all([
+      supabase.from('automation_schedule').select('*').order('device_name', { ascending: true }),
+      supabase
+        .from('manuals')
+        .select('id, title, status, device_id')
+        .not('device_id', 'is', null),
+    ])
     if (error) console.error(error)
+    // Mappa dispositivo -> manuale collegato (il primo pronto, se c'è)
+    const byDev = {}
+    for (const m of mans || []) {
+      if (!byDev[m.device_id] || m.status === 'ready') byDev[m.device_id] = m
+    }
+    setManualByDevice(byDev)
     const list = (data || []).map((d) => ({
       id: d.id,
       device_name: d.device_name,
@@ -220,7 +232,9 @@ export default function Automation() {
               dirty={!!dirty[device.id]}
               saving={!!saving[device.id]}
               open={openIds.includes(device.id)}
+              manual={manualByDevice[device.id]}
               onToggle={() => toggleOpen(device.id)}
+              onOpenManual={(m) => navigate('/manuali', { state: { openManualId: m.id } })}
               onApplyRange={applyRange}
               onClear={clearDevice}
               onSave={saveDevice}
@@ -287,7 +301,9 @@ function DeviceCard({
   dirty,
   saving,
   open,
+  manual,
   onToggle,
+  onOpenManual,
   onApplyRange,
   onClear,
   onSave,
@@ -390,6 +406,20 @@ function DeviceCard({
             <button className="icon-btn" onClick={() => onDelete(device)} title="Elimina">
               🗑
             </button>
+            {manual && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => onOpenManual(manual)}
+                disabled={manual.status !== 'ready'}
+                title={
+                  manual.status === 'ready'
+                    ? `Apri il manuale: ${manual.title}`
+                    : 'Manuale in elaborazione'
+                }
+              >
+                📖 Manuale
+              </button>
+            )}
             <span className="sched-total">
               {weekActive > 0 ? `${formatHours(weekActive)} / settimana` : 'Nessuna fascia'}
             </span>

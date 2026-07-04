@@ -7,6 +7,7 @@ import Credentials from './pages/Credentials'
 import SecureNotes from './pages/SecureNotes'
 import Deadlines from './pages/Deadlines'
 import Automation from './pages/Automation'
+import Manuals from './pages/Manuals'
 import Users from './pages/Users'
 import Spinner from './components/Spinner'
 
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="informazioni" element={<SecureNotes />} />
         <Route path="scadenze" element={<Deadlines />} />
         <Route path="domotica" element={<Automation />} />
+        <Route path="manuali" element={<Manuals />} />
         <Route
           path="utenti"
           element={isAdmin ? <Users /> : <Navigate to="/" replace />}

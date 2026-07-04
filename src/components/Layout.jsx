@@ -9,6 +9,7 @@ const NAV = [
   { to: '/informazioni', label: 'Informazioni', icon: '📄' },
   { to: '/scadenze', label: 'Scadenze', icon: '📅' },
   { to: '/domotica', label: 'Domotica', icon: '💡' },
+  { to: '/manuali', label: 'Manuali', icon: '📖' },
 ]
 
 const NAV_ADMIN = { to: '/utenti', label: 'Utenti', icon: '👥' }
